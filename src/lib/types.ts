@@ -36,4 +36,57 @@ export interface Agent {
   status: AgentStatus;
   lastRun: string | null;
   outputCount: number;
+  lastOutput?: string | null;
+}
+
+export type OwnerGateChoice = "pending" | "approve-draft" | "need-evidence";
+
+export interface EtsyDecision {
+  version: number;
+  mode: "historical-demo" | "live-owner-export";
+  title: string;
+  generatedAt: string;
+  evidenceAsOf: string;
+  source: {
+    listingExport: string;
+    listingRows: number;
+    keywordExport: string | null;
+    keywordRows: number;
+    authority: string;
+    limitations: string[];
+  };
+  metrics: {
+    listings: number;
+    totalViews: number;
+    zeroViewListings: number;
+    zeroFavoriteListings: number;
+    duplicateTitleGroups: number;
+    duplicateListings: number;
+  };
+  focus: {
+    label: string;
+    title: string;
+    listingIds: string[];
+    views: number;
+    favorites: number;
+    reason: string;
+  };
+  targets: {
+    revenueIntent: { title: string; detail: string };
+    evidence: { title: string; detail: string };
+    production: { title: string; detail: string };
+  };
+  recommendation: {
+    decision: string;
+    confidence: "High" | "Medium" | "Low";
+    rationale: string[];
+    missingInputs: string[];
+    liveActionAllowed: boolean;
+  };
+  ownerGate: {
+    status: "pending";
+    allowedActions: string[];
+    note: string;
+  };
+  reportPath: string;
 }

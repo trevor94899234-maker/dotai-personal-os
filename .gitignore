@@ -1,6 +1,7 @@
 node_modules
 dist
 /public/data/
+/demo-output/private/
 *.log
 .DS_Store
 *.local

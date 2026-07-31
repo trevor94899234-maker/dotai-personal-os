@@ -1,0 +1,4 @@
+interface:
+  display_name: "MyGiftStyle Etsy Growth Radar"
+  short_description: "Turn Etsy exports into one safe evidence-backed action"
+  default_prompt: "Use $mygiftstyle-etsy-growth-radar to review my latest Etsy exports and produce a daily evidence-backed decision brief."

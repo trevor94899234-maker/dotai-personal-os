@@ -244,9 +244,10 @@ async function syncContentDrafts() {
 }
 
 // agents.json 唔係由 vault 派生——係 log-agent.mjs 寫嘅「員工運作狀態」。
-// sync 唔會 overwrite 佢；只喺唔存在時 seed 一個 10-row idle roster
+// sync 唔會 overwrite 佢；只喺唔存在時 seed 一個 11-row idle roster
 // （roster 定義 AI Office 頁面上嘅員工卡）。
 const AGENT_ROSTER = [
+  ["etsy-growth-radar", "Etsy Growth Radar", "🧭"],
   ["content-creator", "內容創作", "✍️"],
   ["meeting-organizer", "會議整理", "🗒️"],
   ["doc-processor", "文書處理", "📄"],
