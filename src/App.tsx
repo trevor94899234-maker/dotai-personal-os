@@ -6,6 +6,7 @@ import {
   CalendarDays,
   CheckSquare,
   Compass,
+  ExternalLink,
   LockKeyhole,
 } from "lucide-react";
 import TasksView from "./views/TasksView";
@@ -72,6 +73,15 @@ export default function App() {
               {label}
             </button>
           ))}
+          <a
+            href="https://trevor94899234-maker.github.io/etsyshop-shineon-status/"
+            target="_blank"
+            rel="noreferrer"
+            className="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium text-cream/75 transition hover:bg-white/10 hover:text-white"
+          >
+            <ExternalLink size={17} />
+            ShineOn Monitor
+          </a>
         </nav>
 
         <div className="hidden lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:block lg:p-4">
