@@ -58,6 +58,23 @@ Decision OS 不是另一個 Etsy Stats Dashboard。它把多個來源的證據�
 5. **Approval Packet**：批准前顯示 change diff、風險、rollback、affected listing IDs。
 6. **Learning Loop**：到期後比較 baseline 與 result，禁止沒有證據便宣稱「成功」。
 
+## 2026-08-03 · Evidence Inbox + Trust Ledger v1
+
+已完成本機、owner-controlled v1：
+
+- Evidence Inbox manifest：source、coverage、authority、schema validation、
+  completeness、missing／invalid files、used-in-decision 狀態。
+- Strict normalized Etsy stats adapter：`Listing ID`、`Listing Name`、`Views`、
+  `Visits`、`Favorites`、`Orders`、`Revenue`。
+- Trust Ledger：每個 metric 顯示 authority、quality、freshness、source 和限制。
+- Blank／invalid／explicit zero 分開；confidence 由 first-party focus rows 動態產生。
+- 舊 v1 Dashboard JSON 會安全回落 v2 historical demo，不會令畫面崩潰。
+- 仍然不接 Etsy API、不登入外部平台、不執行 live Etsy action。
+
+v1 限制：search terms、traffic sources、Share & Save 只記錄 intake 狀態，
+尚未解析內容或推斷 attribution。下一個 evidence checkpoint 應使用 owner-provided
+normalized Etsy first-party summary 做 read-only run。
+
 ## Codex 如何真正嵌入 OS
 
 ### 現在

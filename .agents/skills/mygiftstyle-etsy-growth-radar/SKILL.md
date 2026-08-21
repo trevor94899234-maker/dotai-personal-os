@@ -57,11 +57,24 @@ When a compatible EverBee listing CSV is supplied, run:
 node .agents/skills/mygiftstyle-etsy-growth-radar/scripts/run-growth-radar.mjs \
   --listings <everbee-listings.csv> \
   --keywords <optional-keywords.csv> \
+  --etsy-stats <optional-normalized-etsy-stats.csv> \
+  --search-terms <optional-owner-export-or-screenshot> \
+  --traffic-sources <optional-owner-export-or-screenshot> \
+  --coverage-start YYYY-MM-DD \
+  --coverage-end YYYY-MM-DD \
   --as-of YYYY-MM-DD \
   --dashboard public/data/etsy-decision.json \
+  --evidence-output public/data/etsy-evidence.json \
   --report demo-output/YYYY-MM-DD-etsy-growth-radar.md \
   --agents public/data/agents.json
 ```
+
+Evidence Inbox v1 uses a strict normalized first-party CSV adapter with these
+headers: `Listing ID`, `Listing Name`, `Views`, `Visits`, `Favorites`, `Orders`,
+and `Revenue`. Blank numeric cells are `missing`; invalid text is `invalid`;
+only an explicit numeric zero is zero. Search terms, traffic sources, and Share
+& Save are intake-only in v1: their presence and authority are recorded, but
+their contents are not merged into metric totals.
 
 The script records `running`, writes the decision JSON and Traditional Chinese
 report, then records `done` with the output path. On failure it records `error`.
@@ -75,5 +88,7 @@ changing the dashboard schema or report structure.
 - Keep Etsy-facing copy in natural American English.
 - Label the result `draft`, `historical demo`, or `owner-approved` accurately.
 - Include sources, dates, limitations, confidence, and missing inputs.
+- Generate an evidence manifest and Trust Ledger before presenting metrics.
+- Derive confidence from validated first-party focus rows; do not hard-code it.
 - End with 2-3 prioritised next actions and mark the recommended option.
 - Never record a completed draft as a published listing.

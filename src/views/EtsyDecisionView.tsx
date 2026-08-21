@@ -13,7 +13,6 @@ import {
   LockKeyhole,
   PackageCheck,
   Radio,
-  RotateCcw,
   ShieldCheck,
   Sparkles,
   TrendingUp,
@@ -22,6 +21,8 @@ import {
 } from "lucide-react";
 import { fetchJson } from "../lib/fetchJson";
 import type { Agent, EtsyDecision, OwnerGateChoice } from "../lib/types";
+import type { OperationsTab } from "../lib/etsyOperations";
+import EtsyOperationsHub from "../components/EtsyOperationsHub";
 
 const TARGETS = [
   {
@@ -108,7 +109,24 @@ const PIPELINE_TONE: Record<PipelineState, string> = {
   locked: "border-line bg-[#F4ECE4] text-muted",
 };
 
-export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () => void }) {
+function validationTone(validation: EtsyDecision["evidenceInbox"]["files"][number]["validation"]) {
+  if (validation === "valid") return "border-sage/25 bg-[#E8F0E6] text-sage";
+  if (validation === "invalid") return "border-rose/25 bg-[#FFF0EC] text-rose";
+  if (validation === "intake-only") return "border-copper/25 bg-[#F8EDE4] text-copper";
+  return "border-line bg-[#F4ECE4] text-muted";
+}
+
+function trustTone(quality: EtsyDecision["trustLedger"][number]["quality"]) {
+  if (quality === "verified") return "border-sage/25 bg-[#E8F0E6] text-sage";
+  if (quality === "invalid" || quality === "missing") {
+    return "border-rose/25 bg-[#FFF0EC] text-rose";
+  }
+  return "border-copper/25 bg-[#F8EDE4] text-copper";
+}
+
+export default function EtsyDecisionView({ onOpenOffice, presentationOnly = false }: { onOpenOffice?: () => void; presentationOnly?: boolean }) {
+  const [dashboardSurface, setDashboardSurface] = useState<"workspace" | "history">("workspace");
+  const [workspaceStartTab, setWorkspaceStartTab] = useState<OperationsTab>("today");
   const [decision, setDecision] = useState<EtsyDecision | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [choice, setChoice] = useState<OwnerGateChoice>("pending");
@@ -121,8 +139,9 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
         fetchJson<Agent[]>("data/agents.json", []),
       ]);
       const next =
-        live ??
-        (await fetchJson<EtsyDecision | null>("demo/etsy-decision-sample.json", null));
+        live?.version === 2 && live.evidenceInbox && live.trustLedger
+          ? live
+          : await fetchJson<EtsyDecision | null>("demo/etsy-decision-sample.json", null);
       setDecision(next);
       setAgents(roster);
       if (next) {
@@ -193,16 +212,6 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
     ];
   }, [choice]);
 
-  function choose(next: OwnerGateChoice) {
-    if (!decision) return;
-    setChoice(next);
-    if (next === "pending") {
-      localStorage.removeItem(`etsy-owner-gate:${decision.evidenceAsOf}`);
-    } else {
-      localStorage.setItem(`etsy-owner-gate:${decision.evidenceAsOf}`, next);
-    }
-  }
-
   async function copyRunBrief() {
     try {
       await navigator.clipboard.writeText(runBrief);
@@ -226,6 +235,27 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
 
   return (
     <div className="space-y-6 lg:space-y-8">
+      <section className="rounded-[26px] border border-line bg-panel p-4 shadow-card sm:p-5" aria-label="Etsy Dashboard home">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold tracking-[0.16em] text-copper">MyGiftStyle · 店主控制</p>
+            <h1 className="mt-1 font-display text-2xl font-bold text-ink sm:text-3xl">由今日一個清楚決定開始</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
+              {presentationOnly
+                ? "明日簡報只展示由證據到店主批准嘅五幕故事，將工作流程講清楚，唔用未完成嘅功能搶走主線。"
+                : "呢個係可以日常使用嘅 MyGiftStyle 工作區：由下一步開始，接住處理證據、決策、Listing Brief 同店主批准。"}
+            </p>
+          </div>
+          <span className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl border border-copper/25 bg-[#F8EDE4] px-4 py-2.5 text-xs font-bold text-copper">
+            {presentationOnly ? "明日簡報版 · 五幕故事" : "實際工作區 · 可以繼續開發"}
+          </span>
+        </div>
+      </section>
+
+      {dashboardSurface === "workspace" ? (
+        <EtsyOperationsHub initialTab={workspaceStartTab} presentationOnly={presentationOnly} />
+      ) : (
+        <>
       <section className="relative overflow-hidden rounded-[30px] border border-copper/30 bg-gradient-to-br from-[#2A1711] via-[#4B2A20] to-[#713B26] p-6 text-cream shadow-brand sm:p-8 lg:p-10">
         <div className="absolute -right-16 -top-20 h-72 w-72 rounded-full border border-cream/10 bg-brand/10" />
         <div className="absolute -bottom-28 right-24 h-64 w-64 rounded-full border border-cream/10 bg-copper/10" />
@@ -236,13 +266,15 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
                 MyGiftStyle · Decision Control Room
               </span>
               <span className="rounded-full bg-brand px-3 py-1 text-[11px] font-semibold text-white">
-                Historical demo · not live
+                {decision.mode === "historical-demo"
+                  ? "Historical demo · not live"
+                  : "Owner export · local read-only"}
               </span>
             </div>
-            <h1 className="mt-5 max-w-4xl font-display text-4xl font-bold leading-[1.05] text-white sm:text-5xl lg:text-6xl">
+            <h2 className="mt-5 max-w-4xl font-display text-4xl font-bold leading-[1.05] text-white sm:text-5xl lg:text-6xl">
               One safe decision,
               <span className="block text-[#F3B287]">before another Etsy change.</span>
-            </h1>
+            </h2>
             <p className="mt-5 max-w-3xl text-sm leading-7 text-cream/70 sm:text-base">
               將 Etsy、eRank、EverBee 與營運紀錄分層整理。Codex 與 AI Office 做機械檢查、
               建議和 QA；你保留商業判斷、帳戶權限及所有 live action。
@@ -340,6 +372,212 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
         </div>
       </section>
 
+      <section className="grid gap-5 2xl:grid-cols-[0.9fr_1.1fr]">
+        <article className="min-w-0 rounded-[24px] border border-line bg-panel p-5 shadow-card sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-brand">
+                <Database size={18} />
+                <span className="text-xs font-semibold uppercase tracking-[0.16em]">
+                  Evidence Inbox
+                </span>
+              </div>
+              <h2 className="mt-2 font-display text-2xl font-bold">Owner-provided evidence only</h2>
+            </div>
+            <div className="rounded-2xl border border-line bg-[#F8F3ED] px-4 py-3 text-right">
+              <div className="font-display text-3xl font-bold text-ink">
+                {decision.evidenceInbox.completenessPct}%
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-muted">complete</div>
+            </div>
+          </div>
+
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-[#EDE3D8]">
+            <div
+              className="h-full rounded-full bg-brand transition-all"
+              style={{ width: `${decision.evidenceInbox.completenessPct}%` }}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-muted">
+            <span>
+              Coverage: {decision.evidenceInbox.coverageStart ?? "Missing start"} →{" "}
+              {decision.evidenceInbox.coverageEnd}
+            </span>
+            <span>{decision.evidenceInbox.invalidFiles.length} invalid file(s)</span>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-dashed border-brand/35 bg-[#FFF7F0] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-ink">Historical evidence summary</div>
+                <div className="mt-1 text-xs leading-5 text-muted">
+                  呢度只保留舊 snapshot 作參考。新 evidence 必須經 Current workspace 嘅 review、owner confirmation 同 eligibility gate。
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setWorkspaceStartTab("research"); setDashboardSurface("workspace"); }}
+                className="min-h-11 rounded-xl bg-brand px-3.5 py-2 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+              >
+                Open current evidence workflow
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-2">
+            {decision.evidenceInbox.files.map((file) => (
+              <div key={file.id} className="rounded-2xl border border-line bg-[#FBF7F2] p-3.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-ink">{file.label}</span>
+                  <span
+                    className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${validationTone(file.validation)}`}
+                  >
+                    {file.validation}
+                  </span>
+                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">
+                    {file.authority}
+                  </span>
+                </div>
+                <div className="mt-1 break-all text-xs text-muted">
+                  {file.fileName ?? "No file received"}
+                </div>
+                {file.missingHeaders.length > 0 && (
+                  <div className="mt-2 text-xs leading-5 text-rose">
+                    Missing headers: {file.missingHeaders.join(", ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="min-w-0 rounded-[24px] border border-line bg-panel p-5 shadow-card sm:p-6">
+          <div className="flex items-center gap-2 text-copper">
+            <ShieldCheck size={18} />
+            <span className="text-xs font-semibold uppercase tracking-[0.16em]">
+              Trust Ledger
+            </span>
+          </div>
+          <h2 className="mt-2 font-display text-2xl font-bold">每個數字都要交代來源</h2>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            Missing 不等於 0；estimated 不等於 Etsy backend fact；超過 30 日會標示 stale。
+          </p>
+
+          <div className="mt-5 hidden overflow-x-auto rounded-2xl border border-line sm:block">
+            <table className="w-full min-w-[720px] border-collapse text-left text-xs">
+              <thead className="bg-[#F8F3ED] text-muted">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Metric</th>
+                  <th className="px-4 py-3 font-semibold">Value</th>
+                  <th className="px-4 py-3 font-semibold">Authority</th>
+                  <th className="px-4 py-3 font-semibold">Quality</th>
+                  <th className="px-4 py-3 font-semibold">Freshness</th>
+                </tr>
+              </thead>
+              <tbody>
+                {decision.trustLedger.map((item) => {
+                  const currentFreshness =
+                    item.quality === "missing"
+                      ? "n/a"
+                      : evidenceAge !== null && evidenceAge > 30
+                        ? "stale"
+                        : item.freshness;
+                  return (
+                    <tr key={item.id} className="border-t border-line align-top">
+                      <td className="px-4 py-3">
+                        <div className="font-semibold text-ink">{item.label}</div>
+                        <div className="mt-1 max-w-xs leading-5 text-muted">{item.note}</div>
+                      </td>
+                      <td className="px-4 py-3 font-display text-lg font-bold text-ink">
+                        {item.value ?? "Missing"}
+                      </td>
+                      <td className="px-4 py-3 text-muted">{item.authority}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${trustTone(item.quality)}`}
+                        >
+                          {item.quality}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${
+                            currentFreshness === "stale"
+                              ? "border-rose/25 bg-[#FFF0EC] text-rose"
+                              : currentFreshness === "n/a"
+                                ? "border-line bg-[#F4ECE4] text-muted"
+                                : "border-sage/25 bg-[#E8F0E6] text-sage"
+                          }`}
+                        >
+                          {currentFreshness}
+                        </span>
+                        <div className="mt-2 max-w-[190px] break-all text-[10px] leading-4 text-muted">
+                          {item.source}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-5 grid gap-3 sm:hidden" aria-label="Trust Ledger mobile view">
+            {decision.trustLedger.map((item) => {
+              const currentFreshness =
+                item.quality === "missing"
+                  ? "n/a"
+                  : evidenceAge !== null && evidenceAge > 30
+                    ? "stale"
+                    : item.freshness;
+              return (
+                <article key={item.id} className="min-w-0 rounded-2xl border border-line bg-[#FBF7F2] p-4">
+                  <div className="min-w-0">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-ink">{item.label}</h3>
+                      <p className="mt-1 break-words text-xs leading-5 text-muted">{item.note}</p>
+                    </div>
+                    <div className="mt-3 break-words font-display text-xl font-bold text-ink">
+                      {item.value ?? "Missing"}
+                    </div>
+                  </div>
+                  <dl className="mt-4 grid min-w-0 gap-3 text-xs">
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">Authority</dt>
+                      <dd className="mt-1 break-words text-ink">{item.authority}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">Quality</dt>
+                      <dd className="mt-1">
+                        <span className={`inline-flex max-w-full rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${trustTone(item.quality)}`}>
+                          {item.quality}
+                        </span>
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">Freshness</dt>
+                      <dd className="mt-1">
+                        <span
+                          className={`inline-flex max-w-full rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${
+                            currentFreshness === "stale"
+                              ? "border-rose/25 bg-[#FFF0EC] text-rose"
+                              : currentFreshness === "n/a"
+                                ? "border-line bg-[#F4ECE4] text-muted"
+                                : "border-sage/25 bg-[#E8F0E6] text-sage"
+                          }`}
+                        >
+                          {currentFreshness}
+                        </span>
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="mt-3 break-all text-[10px] leading-4 text-muted">Source: {item.source}</p>
+                </article>
+              );
+            })}
+          </div>
+        </article>
+      </section>
+
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
           ["Listings scanned", decision.metrics.listings, "whole snapshot"],
@@ -349,7 +587,9 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
         ].map(([label, value, note]) => (
           <div key={label} className="rounded-[22px] border border-line bg-panel p-5 shadow-card">
             <div className="text-xs font-medium text-muted">{label}</div>
-            <div className="mt-2 font-display text-3xl font-bold text-ink">{value}</div>
+            <div className="mt-2 font-display text-3xl font-bold text-ink">
+              {value ?? "Missing"}
+            </div>
             <div className="mt-1 text-[11px] text-copper">{note}</div>
           </div>
         ))}
@@ -400,12 +640,14 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-3">
             <div className="min-w-28 rounded-2xl border border-line bg-white px-4 py-4 text-center">
-              <div className="font-display text-3xl font-bold text-ink">{decision.focus.views}</div>
+              <div className="font-display text-3xl font-bold text-ink">
+                {decision.focus.views ?? "Missing"}
+              </div>
               <div className="text-xs text-muted">combined views</div>
             </div>
             <div className="min-w-28 rounded-2xl border border-line bg-white px-4 py-4 text-center">
               <div className="font-display text-3xl font-bold text-ink">
-                {decision.focus.favorites}
+                {decision.focus.favorites ?? "Missing"}
               </div>
               <div className="text-xs text-muted">favorites</div>
             </div>
@@ -448,11 +690,11 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
         <article className="rounded-[24px] border border-copper/25 bg-[#F9EEE4] p-5 shadow-card sm:p-6">
           <div className="flex items-center gap-2 text-copper">
             <ShieldCheck size={19} />
-            <span className="text-xs font-semibold uppercase tracking-[0.16em]">Owner Gate</span>
+            <span className="text-xs font-semibold uppercase tracking-[0.16em]">Historical Owner Gate</span>
           </div>
-          <h2 className="mt-2 font-display text-2xl font-bold">你保留最後判斷</h2>
+          <h2 className="mt-2 font-display text-2xl font-bold">舊判斷紀錄，只供參考</h2>
           <p className="mt-2 text-sm leading-6 text-muted">
-            這裡只記錄本機 Demo 選擇，不會修改 Etsy，也不代表永久批准。
+            呢個 snapshot 唔再接受批准。現行 Owner Gate 只會喺 Current workspace 驗證 product truth、evidence 同 tags 後記錄。
           </p>
           <div
             className={`mt-5 rounded-2xl border px-4 py-3 text-sm font-semibold ${
@@ -465,32 +707,13 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
           >
             {gateLabel(choice)}
           </div>
-          <div className="mt-3 grid gap-2">
-            <button
-              type="button"
-              onClick={() => choose("approve-draft")}
-              className="rounded-xl bg-brand px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-[#D94F0D]"
-            >
-              Approve draft only
-            </button>
-            <button
-              type="button"
-              onClick={() => choose("need-evidence")}
-              className="rounded-xl border border-copper/30 bg-white/70 px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-white"
-            >
-              Need more evidence
-            </button>
-            {choice !== "pending" && (
-              <button
-                type="button"
-                onClick={() => choose("pending")}
-                className="flex items-center justify-center gap-1 px-3 py-1.5 text-xs text-muted hover:text-ink"
-              >
-                <RotateCcw size={13} />
-                Reset local choice
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => { setWorkspaceStartTab("results"); setDashboardSurface("workspace"); }}
+            className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-ink px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+          >
+            Open current Owner Gate <ArrowRight size={15} aria-hidden="true" />
+          </button>
         </article>
       </section>
 
@@ -616,6 +839,8 @@ export default function EtsyDecisionView({ onOpenOffice }: { onOpenOffice?: () =
           </div>
         </div>
       </section>
+        </>
+      )}
     </div>
   );
 }

@@ -41,25 +41,67 @@ export interface Agent {
 
 export type OwnerGateChoice = "pending" | "approve-draft" | "need-evidence";
 
+export interface EvidenceFile {
+  id: string;
+  label: string;
+  fileName: string | null;
+  received: boolean;
+  authority: "first-party" | "third-party";
+  validation: "valid" | "invalid" | "missing" | "intake-only";
+  missingHeaders: string[];
+  usedInDecision: boolean;
+}
+
+export interface EvidenceInbox {
+  version: number;
+  coverageStart: string | null;
+  coverageEnd: string;
+  evidenceAsOf: string;
+  completenessPct: number;
+  requiredEvidenceIds: string[];
+  missingTypes: string[];
+  invalidFiles: string[];
+  files: EvidenceFile[];
+}
+
+export interface TrustLedgerItem {
+  id: string;
+  label: string;
+  value: number | null;
+  authority: "first-party" | "third-party" | "derived-third-party" | "missing";
+  quality: "verified" | "partial" | "invalid" | "missing" | "estimated" | "diagnostic";
+  freshness: "fresh" | "stale" | "unknown";
+  ageDays: number | null;
+  source: string;
+  note: string;
+}
+
 export interface EtsyDecision {
   version: number;
-  mode: "historical-demo" | "live-owner-export";
+  mode: "historical-demo" | "owner-export";
   title: string;
   generatedAt: string;
   evidenceAsOf: string;
+  evidenceInbox: EvidenceInbox;
+  trustLedger: TrustLedgerItem[];
   source: {
     listingExport: string;
     listingRows: number;
     keywordExport: string | null;
     keywordRows: number;
+    etsyStatsExport: string | null;
+    etsyStatsRows: number;
     authority: string;
     limitations: string[];
   };
   metrics: {
     listings: number;
-    totalViews: number;
+    totalViews: number | null;
+    totalFavorites: number | null;
     zeroViewListings: number;
     zeroFavoriteListings: number;
+    orders: number | null;
+    revenue: number | null;
     duplicateTitleGroups: number;
     duplicateListings: number;
   };
@@ -67,8 +109,8 @@ export interface EtsyDecision {
     label: string;
     title: string;
     listingIds: string[];
-    views: number;
-    favorites: number;
+    views: number | null;
+    favorites: number | null;
     reason: string;
   };
   targets: {

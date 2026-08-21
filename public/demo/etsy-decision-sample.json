@@ -1,76 +1,182 @@
 {
-  "version": 1,
+  "version": 2,
   "mode": "historical-demo",
   "title": "MyGiftStyle Etsy Decision OS",
-  "generatedAt": "2026-07-29T16:27:13.542Z",
+  "generatedAt": "2026-08-03T07:23:13.365Z",
   "evidenceAsOf": "2026-07-12",
+  "evidenceInbox": {
+    "version": 1,
+    "coverageStart": null,
+    "coverageEnd": "2026-07-12",
+    "evidenceAsOf": "2026-07-12",
+    "completenessPct": 25,
+    "requiredEvidenceIds": ["everbee-listings", "etsy-stats", "etsy-search-terms", "etsy-traffic-sources"],
+    "missingTypes": ["Normalized Etsy listing stats", "Etsy search terms", "Etsy traffic sources"],
+    "invalidFiles": [],
+    "files": [
+      {
+        "id": "everbee-listings",
+        "label": "EverBee listing snapshot",
+        "fileName": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+        "received": true,
+        "authority": "third-party",
+        "validation": "valid",
+        "missingHeaders": [],
+        "usedInDecision": true
+      },
+      {
+        "id": "everbee-keywords",
+        "label": "Keyword context",
+        "fileName": "keywords20260712-12-zl7j6.csv",
+        "received": true,
+        "authority": "third-party",
+        "validation": "valid",
+        "missingHeaders": [],
+        "usedInDecision": false
+      },
+      {
+        "id": "etsy-stats",
+        "label": "Normalized Etsy listing stats",
+        "fileName": null,
+        "received": false,
+        "authority": "first-party",
+        "validation": "missing",
+        "missingHeaders": ["Listing ID", "Listing Name", "Views", "Visits", "Favorites", "Orders", "Revenue"],
+        "usedInDecision": false
+      },
+      {
+        "id": "etsy-search-terms",
+        "label": "Etsy search terms",
+        "fileName": null,
+        "received": false,
+        "authority": "first-party",
+        "validation": "missing",
+        "missingHeaders": [],
+        "usedInDecision": false
+      },
+      {
+        "id": "etsy-traffic-sources",
+        "label": "Etsy traffic sources",
+        "fileName": null,
+        "received": false,
+        "authority": "first-party",
+        "validation": "missing",
+        "missingHeaders": [],
+        "usedInDecision": false
+      },
+      {
+        "id": "share-and-save",
+        "label": "Share & Save",
+        "fileName": null,
+        "received": false,
+        "authority": "first-party",
+        "validation": "missing",
+        "missingHeaders": [],
+        "usedInDecision": false
+      }
+    ]
+  },
+  "trustLedger": [
+    {
+      "id": "total-views",
+      "label": "Total views",
+      "value": 607,
+      "authority": "third-party",
+      "quality": "estimated",
+      "freshness": "fresh",
+      "ageDays": 22,
+      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "note": "EverBee context; not Etsy backend truth"
+    },
+    {
+      "id": "total-favorites",
+      "label": "Total favorites",
+      "value": 15,
+      "authority": "third-party",
+      "quality": "estimated",
+      "freshness": "fresh",
+      "ageDays": 22,
+      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "note": "EverBee context"
+    },
+    {
+      "id": "orders",
+      "label": "Orders",
+      "value": null,
+      "authority": "missing",
+      "quality": "missing",
+      "freshness": "fresh",
+      "ageDays": 22,
+      "source": "Not provided",
+      "note": "Never inferred from EverBee estimated sales"
+    },
+    {
+      "id": "revenue",
+      "label": "Revenue",
+      "value": null,
+      "authority": "missing",
+      "quality": "missing",
+      "freshness": "fresh",
+      "ageDays": 22,
+      "source": "Not provided",
+      "note": "Owner-provided Etsy value only"
+    },
+    {
+      "id": "duplicate-title-groups",
+      "label": "Duplicate title groups",
+      "value": 13,
+      "authority": "derived-third-party",
+      "quality": "diagnostic",
+      "freshness": "fresh",
+      "ageDays": 22,
+      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "note": "Useful for prioritisation; not a conversion conclusion"
+    }
+  ],
   "source": {
     "listingExport": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
     "listingRows": 263,
     "keywordExport": "keywords20260712-12-zl7j6.csv",
     "keywordRows": 580,
+    "etsyStatsExport": null,
+    "etsyStatsRows": 0,
     "authority": "EverBee third-party historical snapshot",
-    "limitations": [
-      "Not live Etsy data",
-      "Estimated sales and conversion are not Etsy first-party facts",
-      "Carts, buyer questions, orders, revenue, and search terms are missing"
-    ]
+    "limitations": ["Not live Etsy data", "Estimated sales and conversion are not Etsy first-party facts", "Orders and revenue are missing"]
   },
   "metrics": {
     "listings": 263,
     "totalViews": 607,
+    "totalFavorites": 15,
     "zeroViewListings": 98,
     "zeroFavoriteListings": 249,
+    "orders": null,
+    "revenue": null,
     "duplicateTitleGroups": 13,
     "duplicateListings": 27
   },
   "focus": {
     "label": "Cannibalization Risk",
     "title": "Tell Me Your Story Mom and Dad, Personalized Parents Memory Book Set, Legacy Journal Gift for Parents, Family Keepsake Journal",
-    "listingIds": [
-      "4517034664",
-      "4524703935"
-    ],
+    "listingIds": ["4517034664", "4524703935"],
     "views": 72,
     "favorites": 0,
-    "reason": "這組完全相同標題在所提供 snapshot 中有最高的 combined views，但未有 favorite 訊號。"
+    "reason": "這組由第三方 snapshot 排序；未有完整 first-party focus rows，不可作 conversion 結論。"
   },
   "targets": {
-    "revenueIntent": {
-      "title": "保護現有最強意圖訊號",
-      "detail": "先聚焦最高 views 的完全相同標題群組；取得相同時段 Etsy 第一方證據前，不分拆或重寫 listing。"
-    },
-    "evidence": {
-      "title": "補回 Etsy 第一方表現",
-      "detail": "以完全相同日期範圍，收集兩個 focus listings 的 views、visits、favorites、carts、orders、revenue、search terms 及 traffic source。"
-    },
-    "production": {
-      "title": "只做一份定位分流 brief",
-      "detail": "草擬一個 primary Parents Memory Book Set lane 及一個清楚不同的 supporting lane；不 publish，也不修改 listings。"
-    }
+    "revenueIntent": {"title": "保護現有最強意圖訊號", "detail": "先補齊 focus listings 的同期間 Etsy first-party rows，不分拆或重寫 listing。"},
+    "evidence": {"title": "Evidence Inbox 25% complete", "detail": "補回 normalized Etsy stats、search terms 和 traffic sources。"},
+    "production": {"title": "暫停新的 listing production", "detail": "先修正 evidence debt；不以不完整資料起草新 title、price 或 SEO。"}
   },
   "recommendation": {
-    "decision": "任何 live Etsy 改動前，需要更多第一方證據",
-    "confidence": "Medium",
-    "rationale": [
-      "2 個 listings 使用完全相同的 title。",
-      "所提供 snapshot 顯示這組有 72 combined views、0 favorites。",
-      "這個訊號可用來排序，但不足以作 conversion 或 pricing 結論。"
-    ],
-    "missingInputs": [
-      "兩個 listings 同一時段的 Etsy 第一方 views 與 visits",
-      "Favorites、carts、buyer questions、orders 與 revenue",
-      "Etsy search terms 與 traffic source",
-      "目前 listing 狀態及任何 active test protection"
-    ],
+    "decision": "任何 live Etsy 改動前，需要更多或更乾淨的第一方證據",
+    "confidence": "Low",
+    "rationale": ["2 個 listings 使用完全相同的 title。", "Focus signal source：EverBee third-party snapshot。", "Evidence Inbox completeness：25%；invalid files：0。"],
+    "missingInputs": ["Normalized Etsy first-party listing stats with the required v1 headers", "Etsy search terms for the same coverage period", "Etsy traffic sources for the same coverage period", "Coverage start date", "Current active-test protection confirmation"],
     "liveActionAllowed": false
   },
   "ownerGate": {
     "status": "pending",
-    "allowedActions": [
-      "Approve draft only",
-      "Need more evidence"
-    ],
+    "allowedActions": ["Approve draft only", "Need more evidence"],
     "note": "Dashboard 選擇只是本機 Demo 狀態，不會修改 Etsy，也不是永久商業批准紀錄。"
   },
   "reportPath": "demo-output/2026-07-12-etsy-growth-radar.md"

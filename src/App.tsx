@@ -19,12 +19,12 @@ import EtsyDecisionView from "./views/EtsyDecisionView";
 type View = "tasks" | "today" | "daily" | "vault" | "office" | "etsy";
 
 const NAV: Array<{ id: View; label: string; icon: typeof CheckSquare }> = [
-  { id: "today", label: "Today", icon: CalendarDays },
-  { id: "etsy", label: "Etsy Decision", icon: Compass },
-  { id: "office", label: "AI Office", icon: Bot },
-  { id: "tasks", label: "Tasks", icon: CheckSquare },
-  { id: "daily", label: "Daily Note", icon: BookOpen },
-  { id: "vault", label: "Vault Health", icon: Activity },
+  { id: "today", label: "今日", icon: CalendarDays },
+  { id: "etsy", label: "Etsy 決策", icon: Compass },
+  { id: "office", label: "AI 辦公室", icon: Bot },
+  { id: "tasks", label: "任務", icon: CheckSquare },
+  { id: "daily", label: "每日筆記", icon: BookOpen },
+  { id: "vault", label: "Vault 健康", icon: Activity },
 ];
 
 export default function App() {
@@ -43,18 +43,18 @@ export default function App() {
                 MyGiftStyle
               </div>
               <div className="text-[11px] uppercase tracking-[0.2em] text-cream/60">
-                Decision Studio
+                決策工作室
               </div>
             </div>
           </div>
           <div className="hidden items-center gap-1.5 rounded-full border border-cream/15 bg-white/5 px-2.5 py-1 text-[10px] text-cream/70 sm:flex lg:mt-5 lg:w-fit">
             <LockKeyhole size={11} />
-            Private · owner controlled
+            私密 · 店主控制
           </div>
         </div>
 
         <nav
-          className="flex gap-1 overflow-x-auto px-4 pb-4 sm:px-6 lg:flex-col lg:overflow-visible lg:px-4"
+          className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-4 pb-4 sm:px-6 lg:flex-col lg:overflow-visible lg:px-4"
           aria-label="Main navigation"
         >
           {NAV.map(({ id, label, icon: Icon }) => (
@@ -80,7 +80,7 @@ export default function App() {
             className="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium text-cream/75 transition hover:bg-white/10 hover:text-white"
           >
             <ExternalLink size={17} />
-            ShineOn Monitor
+            ShineOn 監察
           </a>
         </nav>
 
@@ -88,10 +88,10 @@ export default function App() {
           <div className="rounded-2xl border border-cream/15 bg-white/[0.06] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold text-cream">
               <span className="h-2 w-2 rounded-full bg-sage" />
-              Human approval layer
+              店主批准層
             </div>
             <p className="mt-2 text-xs leading-5 text-cream/55">
-              AI 整理證據及草擬建議；所有 Etsy live action 仍由你決定。
+              AI 整理證據及草擬建議；所有 Etsy 實際操作仍由你決定。
             </p>
           </div>
         </div>

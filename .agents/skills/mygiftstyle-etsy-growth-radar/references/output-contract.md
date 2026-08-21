@@ -4,10 +4,14 @@ The deterministic script writes two artifacts.
 
 ## Dashboard JSON
 
-`etsy-decision.json` contains:
+`etsy-decision.json` version 2 contains:
 
 - `mode`, `generatedAt`, and `evidenceAsOf`;
 - source filenames, row counts, authority, and limitations;
+- an Evidence Inbox manifest with coverage, validation, completeness, missing
+  types, invalid files, and whether each input was used in the decision;
+- a Trust Ledger that gives every displayed metric a value, authority, quality,
+  freshness, source, and limitation note;
 - shop-level snapshot metrics;
 - the highest-signal exact-title duplicate cluster;
 - exactly three daily targets;
@@ -18,6 +22,17 @@ The deterministic script writes two artifacts.
 The Dashboard may store a local owner-gate selection in browser storage for
 the Demo. That selection is a UI demonstration only and must not be described
 as an Etsy change or durable business decision.
+
+`etsy-evidence.json` contains the standalone Evidence Inbox manifest. It must
+not contain raw customer data, credentials, order details, or private messages.
+
+Confidence rules:
+
+- `High`: valid normalized Etsy first-party input covers every focus Listing ID
+  and all focus numeric fields are present and valid;
+- `Medium`: valid first-party focus rows contain missing numeric cells;
+- `Low`: no valid first-party input, missing focus Listing IDs, invalid numeric
+  cells, or an invalid schema.
 
 ## Markdown report
 

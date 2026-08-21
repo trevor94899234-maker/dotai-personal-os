@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
+import {
+  ETSY_STATS_HEADERS,
+  EVERBEE_LISTING_HEADERS,
+  countExplicitZero,
+  evidenceConfidence,
+  freshness,
+  parseCsv,
+  summarizeNumeric,
+  validateHeaders,
+} from "./evidence-core.mjs";
 
 const EMPLOYEE_ID = "etsy-growth-radar";
 const EMPLOYEE_NAME = "Etsy Growth Radar";
@@ -35,62 +45,11 @@ function usage() {
   return [
     "Usage:",
     "node run-growth-radar.mjs --listings <csv> --as-of YYYY-MM-DD",
-    "  [--keywords <csv>] [--dashboard <json>] [--report <md>] [--agents <json>]",
+    "  [--keywords <csv>] [--etsy-stats <normalized-csv>]",
+    "  [--search-terms <file>] [--traffic-sources <file>] [--share-and-save <file>]",
+    "  [--coverage-start YYYY-MM-DD] [--coverage-end YYYY-MM-DD]",
+    "  [--dashboard <json>] [--evidence-output <json>] [--report <md>] [--agents <json>]",
   ].join("\n");
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let field = "";
-  let quoted = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (quoted) {
-      if (char === '"' && text[i + 1] === '"') {
-        field += '"';
-        i += 1;
-      } else if (char === '"') {
-        quoted = false;
-      } else {
-        field += char;
-      }
-    } else if (char === '"') {
-      quoted = true;
-    } else if (char === ",") {
-      row.push(field);
-      field = "";
-    } else if (char === "\n") {
-      row.push(field.replace(/\r$/, ""));
-      rows.push(row);
-      row = [];
-      field = "";
-    } else {
-      field += char;
-    }
-  }
-
-  if (field.length > 0 || row.length > 0) {
-    row.push(field.replace(/\r$/, ""));
-    rows.push(row);
-  }
-
-  if (rows.length === 0) return [];
-  const headers = rows[0].map((header, index) =>
-    index === 0 ? header.replace(/^\uFEFF/, "").trim() : header.trim(),
-  );
-  return rows
-    .slice(1)
-    .filter((values) => values.some((value) => value.trim() !== ""))
-    .map((values) =>
-      Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])),
-    );
-}
-
-function numberValue(value) {
-  const parsed = Number(String(value ?? "").replace(/[$,%\s]/g, ""));
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function listingId(url) {
@@ -137,22 +96,34 @@ async function updateAgent(path, status, outputCount, lastOutput = null) {
 
 function markdownReport(decision) {
   const ids = decision.focus.listingIds.map((id) => `\`${id}\``).join("、");
+  const evidenceRows = decision.evidenceInbox.files
+    .map(
+      (file) =>
+        `| ${file.label} | ${file.received ? `\`${file.fileName}\`` : "Missing"} | ${file.authority} | ${file.validation} | ${file.usedInDecision ? "Yes" : "No"} |`,
+    )
+    .join("\n");
+  const trustRows = decision.trustLedger
+    .map(
+      (item) =>
+        `| ${item.label} | ${item.value ?? "Missing"} | ${item.authority} | ${item.quality} | ${item.quality === "missing" ? "n/a" : item.freshness} | ${item.source} |`,
+    )
+    .join("\n");
   return `---
 date: ${decision.evidenceAsOf}
 type: etsy-growth-radar
-status: historical-demo
-tags: [etsy, demo, growth-radar, decision]
+status: ${decision.mode}
+tags: [etsy, growth-radar, evidence, decision]
 ---
 
 # MyGiftStyle Etsy Growth Radar - ${decision.evidenceAsOf}
 
 ## 一句總結
 
-> 先補回 Etsy 第一方證據，再為最高訊號的重複標題群組製作定位分流草稿；本報告不授權任何 live Etsy 改動。
+> ${decision.recommendation.decision}；本報告不授權任何 live Etsy 改動。
 
 ## 資料狀態
 
-- 模式：歷史真實資料 Demo，並非即時店舖狀態
+- 模式：${decision.mode}
 - Listing 來源：\`${decision.source.listingExport}\`
 - Listing rows：${decision.source.listingRows}
 - Keyword 來源：${decision.source.keywordExport ? `\`${decision.source.keywordExport}\`` : "未提供"}
@@ -160,14 +131,33 @@ tags: [etsy, demo, growth-radar, decision]
 - Evidence as of：${decision.evidenceAsOf}
 - 資料權威：${decision.source.authority}
 
+## Evidence Inbox
+
+- Coverage：${decision.evidenceInbox.coverageStart ?? "未提供"} 至 ${decision.evidenceInbox.coverageEnd}
+- Completeness：${decision.evidenceInbox.completenessPct}%
+- Missing types：${decision.evidenceInbox.missingTypes.join("、") || "None"}
+- Invalid files：${decision.evidenceInbox.invalidFiles.join("、") || "None"}
+
+| Evidence | File | Authority | Validation | Used in decision |
+|---|---|---|---|---|
+${evidenceRows}
+
+## Trust Ledger
+
+| Metric | Value | Authority | Quality | Freshness | Source |
+|---|---:|---|---|---|---|
+${trustRows}
+
 ## 店舖訊號
 
 | 指標 | 結果 |
 |---|---:|
 | Listings | ${decision.metrics.listings} |
-| Total views | ${decision.metrics.totalViews} |
+| Total views | ${decision.metrics.totalViews ?? "Missing"} |
 | Zero-view listings | ${decision.metrics.zeroViewListings} |
 | Zero-favorite listings | ${decision.metrics.zeroFavoriteListings} |
+| Orders | ${decision.metrics.orders ?? "Missing"} |
+| Revenue | ${decision.metrics.revenue ?? "Missing"} |
 | Exact-title duplicate groups | ${decision.metrics.duplicateTitleGroups} |
 | Listings inside duplicate groups | ${decision.metrics.duplicateListings} |
 
@@ -201,7 +191,7 @@ ${decision.recommendation.rationale.map((item) => `- ${item}`).join("\n")}
 
 ## 缺少資料
 
-${decision.recommendation.missingInputs.map((item) => `- ${item}`).join("\n")}
+${decision.recommendation.missingInputs.length ? decision.recommendation.missingInputs.map((item) => `- ${item}`).join("\n") : "- None"}
 
 ## Confidence
 
@@ -215,8 +205,8 @@ ${decision.recommendation.confidence}
 
 ## 下一步
 
-1. **建議：**由店主提供兩個 focus listings 的同一日期範圍 Etsy Stats。
-2. 取得 first-party evidence 後，完成 primary lane 與 supporting lane 的分流草稿。
+1. **建議：**先修正 Evidence Inbox 顯示的 missing 或 invalid inputs。
+2. Evidence 完整後，再製作一份 owner-reviewed draft decision。
 3. 未有 owner 明確批准前，不執行 live Etsy 改動。
 `;
 }
@@ -230,7 +220,19 @@ async function main() {
   const cwd = process.cwd();
   const listingsPath = resolve(cwd, args.listings);
   const keywordsPath = args.keywords ? resolve(cwd, args.keywords) : null;
+  const etsyStatsPath = args["etsy-stats"] ? resolve(cwd, args["etsy-stats"]) : null;
+  const searchTermsPath = args["search-terms"] ? resolve(cwd, args["search-terms"]) : null;
+  const trafficSourcesPath = args["traffic-sources"]
+    ? resolve(cwd, args["traffic-sources"])
+    : null;
+  const shareAndSavePath = args["share-and-save"]
+    ? resolve(cwd, args["share-and-save"])
+    : null;
   const dashboardPath = resolve(cwd, args.dashboard ?? "public/data/etsy-decision.json");
+  const evidenceOutputPath = resolve(
+    cwd,
+    args["evidence-output"] ?? "public/data/etsy-evidence.json",
+  );
   const reportPath = resolve(
     cwd,
     args.report ?? `demo-output/${args["as-of"]}-etsy-growth-radar.md`,
@@ -240,12 +242,33 @@ async function main() {
   await updateAgent(agentsPath, "running", 0, null);
 
   try {
-    const listings = parseCsv(await readFile(listingsPath, "utf8")).filter(
-      (row) => row["Product Name"],
-    );
-    const keywords = keywordsPath
-      ? parseCsv(await readFile(keywordsPath, "utf8")).filter((row) => row.Keyword)
+    const listingCsv = parseCsv(await readFile(listingsPath, "utf8"));
+    const listingValidation = validateHeaders(listingCsv.headers, EVERBEE_LISTING_HEADERS);
+    if (!listingValidation.valid) {
+      throw new Error(
+        `EverBee listing CSV is missing required headers: ${listingValidation.missing.join(", ")}`,
+      );
+    }
+    const listings = listingCsv.rows.filter((row) => row["Product Name"]);
+
+    const keywordCsv = keywordsPath
+      ? parseCsv(await readFile(keywordsPath, "utf8"))
+      : { headers: [], rows: [] };
+    const keywords = keywordCsv.rows.filter((row) => row.Keyword);
+
+    const etsyStatsCsv = etsyStatsPath
+      ? parseCsv(await readFile(etsyStatsPath, "utf8"))
+      : { headers: [], rows: [] };
+    const etsyStatsValidation = etsyStatsPath
+      ? validateHeaders(etsyStatsCsv.headers, ETSY_STATS_HEADERS)
+      : { valid: false, missing: ETSY_STATS_HEADERS };
+    const etsyStatsRows = etsyStatsValidation.valid
+      ? etsyStatsCsv.rows.filter((row) => String(row["Listing ID"] ?? "").trim())
       : [];
+
+    for (const optionalPath of [searchTermsPath, trafficSourcesPath, shareAndSavePath]) {
+      if (optionalPath) await access(optionalPath);
+    }
 
     if (listings.length === 0) {
       throw new Error("No compatible EverBee listing rows were found.");
@@ -264,93 +287,337 @@ async function main() {
       .map(([title, rows]) => ({
         title,
         rows,
-        views: rows.reduce((sum, row) => sum + numberValue(row["Total Views"]), 0),
-        favorites: rows.reduce(
-          (sum, row) => sum + numberValue(row["Total Favorites"]),
-          0,
-        ),
+        viewsSummary: summarizeNumeric(rows, "Total Views"),
+        favoritesSummary: summarizeNumeric(rows, "Total Favorites"),
       }))
-      .sort((a, b) => b.views - a.views || b.rows.length - a.rows.length);
+      .sort(
+        (a, b) =>
+          (b.viewsSummary.value ?? -1) - (a.viewsSummary.value ?? -1) ||
+          b.rows.length - a.rows.length,
+      );
 
     const focus = duplicates[0];
     if (!focus) {
       throw new Error("No exact-title duplicate group was found in the listing export.");
     }
 
+    const focusListingIds = focus.rows.map((row) => listingId(row["Product Link"]));
+    const firstPartyByListing = new Map(
+      etsyStatsRows.map((row) => [String(row["Listing ID"]).trim(), row]),
+    );
+    const focusStatsRows = focusListingIds
+      .map((id) => firstPartyByListing.get(id))
+      .filter(Boolean);
+    const focusRowsFound =
+      etsyStatsValidation.valid &&
+      focusListingIds.every((id) => id !== "not-confirmed" && firstPartyByListing.has(id));
+
+    const usesFirstParty = etsyStatsValidation.valid && etsyStatsRows.length > 0;
+    const metricRows = usesFirstParty ? etsyStatsRows : listings;
+    const metricFields = usesFirstParty
+      ? { views: "Views", favorites: "Favorites", orders: "Orders", revenue: "Revenue" }
+      : {
+          views: "Total Views",
+          favorites: "Total Favorites",
+          orders: null,
+          revenue: null,
+        };
+    const viewsSummary = summarizeNumeric(metricRows, metricFields.views);
+    const favoritesSummary = summarizeNumeric(metricRows, metricFields.favorites);
+    const ordersSummary = metricFields.orders
+      ? summarizeNumeric(metricRows, metricFields.orders)
+      : { value: null, validRows: 0, missingRows: metricRows.length, invalidRows: 0, quality: "missing" };
+    const revenueSummary = metricFields.revenue
+      ? summarizeNumeric(metricRows, metricFields.revenue)
+      : { value: null, validRows: 0, missingRows: metricRows.length, invalidRows: 0, quality: "missing" };
+
+    const focusViewsSummary = focusRowsFound
+      ? summarizeNumeric(focusStatsRows, "Views")
+      : focus.viewsSummary;
+    const focusFavoritesSummary = focusRowsFound
+      ? summarizeNumeric(focusStatsRows, "Favorites")
+      : focus.favoritesSummary;
+    const focusNumericSummaries = focusRowsFound
+      ? [
+          summarizeNumeric(focusStatsRows, "Views"),
+          summarizeNumeric(focusStatsRows, "Visits"),
+          summarizeNumeric(focusStatsRows, "Favorites"),
+          summarizeNumeric(focusStatsRows, "Orders"),
+          summarizeNumeric(focusStatsRows, "Revenue"),
+        ]
+      : [];
+    const confidence = evidenceConfidence({
+      firstPartyStats: { valid: usesFirstParty },
+      focusRowsFound,
+      numericSummaries: focusNumericSummaries,
+    });
+
+    const makeEvidenceFile = ({
+      id,
+      label,
+      path,
+      authority,
+      validation = path ? "intake-only" : "missing",
+      missingHeaders = [],
+      usedInDecision = false,
+    }) => ({
+      id,
+      label,
+      fileName: path ? basename(path) : null,
+      received: Boolean(path),
+      authority,
+      validation,
+      missingHeaders,
+      usedInDecision,
+    });
+
+    const evidenceFiles = [
+      makeEvidenceFile({
+        id: "everbee-listings",
+        label: "EverBee listing snapshot",
+        path: listingsPath,
+        authority: "third-party",
+        validation: "valid",
+        usedInDecision: true,
+      }),
+      makeEvidenceFile({
+        id: "everbee-keywords",
+        label: "Keyword context",
+        path: keywordsPath,
+        authority: "third-party",
+        validation: keywordsPath ? (keywordCsv.headers.includes("Keyword") ? "valid" : "invalid") : "missing",
+        missingHeaders: keywordsPath && !keywordCsv.headers.includes("Keyword") ? ["Keyword"] : [],
+      }),
+      makeEvidenceFile({
+        id: "etsy-stats",
+        label: "Normalized Etsy listing stats",
+        path: etsyStatsPath,
+        authority: "first-party",
+        validation: etsyStatsPath ? (etsyStatsValidation.valid ? "valid" : "invalid") : "missing",
+        missingHeaders: etsyStatsValidation.missing,
+        usedInDecision: usesFirstParty,
+      }),
+      makeEvidenceFile({
+        id: "etsy-search-terms",
+        label: "Etsy search terms",
+        path: searchTermsPath,
+        authority: "first-party",
+      }),
+      makeEvidenceFile({
+        id: "etsy-traffic-sources",
+        label: "Etsy traffic sources",
+        path: trafficSourcesPath,
+        authority: "first-party",
+      }),
+      makeEvidenceFile({
+        id: "share-and-save",
+        label: "Share & Save",
+        path: shareAndSavePath,
+        authority: "first-party",
+      }),
+    ];
+
+    const requiredEvidenceIds = [
+      "everbee-listings",
+      "etsy-stats",
+      "etsy-search-terms",
+      "etsy-traffic-sources",
+    ];
+    const requiredEvidence = evidenceFiles.filter((file) => requiredEvidenceIds.includes(file.id));
+    const missingTypes = requiredEvidence
+      .filter((file) => !file.received)
+      .map((file) => file.label);
+    const invalidFiles = evidenceFiles
+      .filter((file) => file.received && file.validation === "invalid")
+      .map((file) => file.label);
+    const acceptedRequired = requiredEvidence.filter(
+      (file) => file.received && file.validation !== "invalid",
+    ).length;
+    const evidenceInbox = {
+      version: 1,
+      coverageStart: args["coverage-start"] ?? null,
+      coverageEnd: args["coverage-end"] ?? args["as-of"],
+      evidenceAsOf: args["as-of"],
+      completenessPct: Math.round((acceptedRequired / requiredEvidence.length) * 100),
+      requiredEvidenceIds,
+      missingTypes,
+      invalidFiles,
+      files: evidenceFiles,
+    };
+
+    const freshnessState = freshness(args["as-of"]);
+    const metricAuthority = usesFirstParty ? "first-party" : "third-party";
+    const metricSource = usesFirstParty ? basename(etsyStatsPath) : basename(listingsPath);
+    const trustLedger = [
+      {
+        id: "total-views",
+        label: "Total views",
+        value: viewsSummary.value,
+        authority: metricAuthority,
+        quality: usesFirstParty ? viewsSummary.quality : "estimated",
+        freshness: freshnessState.status,
+        ageDays: freshnessState.ageDays,
+        source: metricSource,
+        note: usesFirstParty ? "Normalized owner-provided Etsy stats" : "EverBee context; not Etsy backend truth",
+      },
+      {
+        id: "total-favorites",
+        label: "Total favorites",
+        value: favoritesSummary.value,
+        authority: metricAuthority,
+        quality: usesFirstParty ? favoritesSummary.quality : "estimated",
+        freshness: freshnessState.status,
+        ageDays: freshnessState.ageDays,
+        source: metricSource,
+        note: usesFirstParty ? "Explicit zero remains distinct from missing" : "EverBee context",
+      },
+      {
+        id: "orders",
+        label: "Orders",
+        value: ordersSummary.value,
+        authority: usesFirstParty ? "first-party" : "missing",
+        quality: ordersSummary.quality,
+        freshness: freshnessState.status,
+        ageDays: freshnessState.ageDays,
+        source: usesFirstParty ? metricSource : "Not provided",
+        note: "Never inferred from EverBee estimated sales",
+      },
+      {
+        id: "revenue",
+        label: "Revenue",
+        value: revenueSummary.value,
+        authority: usesFirstParty ? "first-party" : "missing",
+        quality: revenueSummary.quality,
+        freshness: freshnessState.status,
+        ageDays: freshnessState.ageDays,
+        source: usesFirstParty ? metricSource : "Not provided",
+        note: "Owner-provided Etsy value only",
+      },
+      {
+        id: "duplicate-title-groups",
+        label: "Duplicate title groups",
+        value: duplicates.length,
+        authority: "derived-third-party",
+        quality: "diagnostic",
+        freshness: freshnessState.status,
+        ageDays: freshnessState.ageDays,
+        source: basename(listingsPath),
+        note: "Useful for prioritisation; not a conversion conclusion",
+      },
+    ];
+
+    const missingInputs = [];
+    if (!usesFirstParty) {
+      missingInputs.push("Normalized Etsy first-party listing stats with the required v1 headers");
+    } else if (!focusRowsFound) {
+      missingInputs.push("First-party rows for every focus Listing ID");
+    }
+    if (usesFirstParty) {
+      for (const [label, summary] of [
+        ["Views", viewsSummary],
+        ["Favorites", favoritesSummary],
+        ["Orders", ordersSummary],
+        ["Revenue", revenueSummary],
+      ]) {
+        if (summary.missingRows > 0 || summary.invalidRows > 0) {
+          missingInputs.push(
+            `${label}: ${summary.missingRows} missing row(s), ${summary.invalidRows} invalid row(s)`,
+          );
+        }
+      }
+    }
+    if (!searchTermsPath) missingInputs.push("Etsy search terms for the same coverage period");
+    if (!trafficSourcesPath) missingInputs.push("Etsy traffic sources for the same coverage period");
+    if (!args["coverage-start"]) missingInputs.push("Coverage start date");
+    missingInputs.push("Current active-test protection confirmation");
+
+    const decisionText =
+      confidence === "High"
+        ? "第一方 listing evidence 已通過 v1 validation，可進入 draft-only decision review"
+        : confidence === "Medium"
+          ? "第一方 listing evidence 有 missing cells；修正後再進入 draft decision"
+          : "任何 live Etsy 改動前，需要更多或更乾淨的第一方證據";
+
     const reportRelative = relative(cwd, reportPath).replaceAll("\\", "/");
     const decision = {
-      version: 1,
-      mode: "historical-demo",
+      version: 2,
+      mode: usesFirstParty ? "owner-export" : "historical-demo",
       title: "MyGiftStyle Etsy Decision OS",
       generatedAt: new Date().toISOString(),
       evidenceAsOf: args["as-of"],
+      evidenceInbox,
+      trustLedger,
       source: {
         listingExport: basename(listingsPath),
         listingRows: listings.length,
         keywordExport: keywordsPath ? basename(keywordsPath) : null,
         keywordRows: keywords.length,
-        authority: "EverBee third-party historical snapshot",
-        limitations: [
-          "Not live Etsy data",
-          "Estimated sales and conversion are not Etsy first-party facts",
-          "Carts, buyer questions, orders, revenue, and search terms are missing",
-        ],
+        etsyStatsExport: etsyStatsPath ? basename(etsyStatsPath) : null,
+        etsyStatsRows: etsyStatsRows.length,
+        authority: usesFirstParty
+          ? "Owner-provided normalized Etsy first-party summary plus dated third-party context"
+          : "EverBee third-party historical snapshot",
+        limitations: usesFirstParty
+          ? [
+              "Normalized summary requires retained original Etsy evidence",
+              "Intake-only files are recorded but not parsed into metric totals",
+              "No live Etsy connection or write access",
+            ]
+          : [
+              "Not live Etsy data",
+              "Estimated sales and conversion are not Etsy first-party facts",
+              "Orders and revenue are missing",
+            ],
       },
       metrics: {
-        listings: listings.length,
-        totalViews: listings.reduce(
-          (sum, row) => sum + numberValue(row["Total Views"]),
-          0,
-        ),
-        zeroViewListings: listings.filter(
-          (row) => numberValue(row["Total Views"]) === 0,
-        ).length,
-        zeroFavoriteListings: listings.filter(
-          (row) => numberValue(row["Total Favorites"]) === 0,
-        ).length,
+        listings: metricRows.length,
+        totalViews: viewsSummary.value,
+        totalFavorites: favoritesSummary.value,
+        zeroViewListings: countExplicitZero(metricRows, metricFields.views),
+        zeroFavoriteListings: countExplicitZero(metricRows, metricFields.favorites),
+        orders: ordersSummary.value,
+        revenue: revenueSummary.value,
         duplicateTitleGroups: duplicates.length,
         duplicateListings: duplicates.reduce((sum, group) => sum + group.rows.length, 0),
       },
       focus: {
         label: "Cannibalization Risk",
         title: focus.title,
-        listingIds: focus.rows.map((row) => listingId(row["Product Link"])),
-        views: focus.views,
-        favorites: focus.favorites,
-        reason:
-          "這組完全相同標題在所提供 snapshot 中有最高的 combined views，但未有 favorite 訊號。",
+        listingIds: focusListingIds,
+        views: focusViewsSummary.value,
+        favorites: focusFavoritesSummary.value,
+        reason: focusRowsFound
+          ? "重複標題群組已由同一 coverage period 的 normalized Etsy first-party rows補充。"
+          : "這組由第三方 snapshot 排序；未有完整 first-party focus rows，不可作 conversion 結論。",
       },
       targets: {
         revenueIntent: {
-          title: "保護現有最強意圖訊號",
-          detail:
-            "先聚焦最高 views 的完全相同標題群組；取得相同時段 Etsy 第一方證據前，不分拆或重寫 listing。",
+          title: confidence === "High" ? "Review verified focus signal" : "保護現有最強意圖訊號",
+          detail: focusRowsFound
+            ? "只讀比較 focus listings 的 views、favorites、orders 與 revenue；仍不授權 live change。"
+            : "先補齊 focus listings 的同期間 Etsy first-party rows，不分拆或重寫 listing。",
         },
         evidence: {
-          title: "補回 Etsy 第一方表現",
-          detail:
-            "以完全相同日期範圍，收集兩個 focus listings 的 views、visits、favorites、carts、orders、revenue、search terms 及 traffic source。",
+          title: `Evidence Inbox ${evidenceInbox.completenessPct}% complete`,
+          detail: missingInputs.slice(0, 3).join("；") || "Required v1 evidence is complete.",
         },
         production: {
-          title: "只做一份定位分流 brief",
+          title: confidence === "High" ? "準備一份 draft-only decision packet" : "暫停新的 listing production",
           detail:
-            "草擬一個 primary Parents Memory Book Set lane 及一個清楚不同的 supporting lane；不 publish，也不修改 listings。",
+            confidence === "High"
+              ? "只整理 evidence、risk、rollback 與 owner gate；不 publish，也不修改 listings。"
+              : "先修正 evidence debt；不以不完整資料起草新 title、price 或 SEO。",
         },
       },
       recommendation: {
-        decision: "任何 live Etsy 改動前，需要更多第一方證據",
-        confidence: "Medium",
+        decision: decisionText,
+        confidence,
         rationale: [
           `${focus.rows.length} 個 listings 使用完全相同的 title。`,
-          `所提供 snapshot 顯示這組有 ${focus.views} combined views、${focus.favorites} favorites。`,
-          "這個訊號可用來排序，但不足以作 conversion 或 pricing 結論。",
+          `Focus signal source：${focusRowsFound ? "normalized Etsy first-party summary" : "EverBee third-party snapshot"}。`,
+          `Evidence Inbox completeness：${evidenceInbox.completenessPct}%；invalid files：${invalidFiles.length}。`,
         ],
-        missingInputs: [
-          "兩個 listings 同一時段的 Etsy 第一方 views 與 visits",
-          "Favorites、carts、buyer questions、orders 與 revenue",
-          "Etsy search terms 與 traffic source",
-          "目前 listing 狀態及任何 active test protection",
-        ],
+        missingInputs,
         liveActionAllowed: false,
       },
       ownerGate: {
@@ -363,8 +630,10 @@ async function main() {
     };
 
     await ensureParent(dashboardPath);
+    await ensureParent(evidenceOutputPath);
     await ensureParent(reportPath);
     await writeFile(dashboardPath, `${JSON.stringify(decision, null, 2)}\n`, "utf8");
+    await writeFile(evidenceOutputPath, `${JSON.stringify(evidenceInbox, null, 2)}\n`, "utf8");
     await writeFile(reportPath, markdownReport(decision), "utf8");
     await updateAgent(agentsPath, "done", 1, reportRelative);
 
@@ -373,6 +642,7 @@ async function main() {
         {
           status: "done",
           dashboard: dashboardPath,
+          evidence: evidenceOutputPath,
           report: reportPath,
           focusListingIds: decision.focus.listingIds,
           metrics: decision.metrics,

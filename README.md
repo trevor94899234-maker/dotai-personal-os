@@ -26,11 +26,23 @@ Shop Stats，而是把店主提供的 Etsy、eRank 或 EverBee export 轉成：
 npm.cmd run demo:etsy -- `
   --listings "C:\path\to\everbee-listings.csv" `
   --keywords "C:\path\to\keywords.csv" `
-  --as-of 2026-07-12 `
+  --etsy-stats "C:\path\to\normalized-etsy-stats.csv" `
+  --search-terms "C:\path\to\etsy-search-terms.csv" `
+  --traffic-sources "C:\path\to\etsy-traffic-sources.csv" `
+  --coverage-start 2026-07-01 `
+  --coverage-end 2026-07-31 `
+  --as-of 2026-07-31 `
   --dashboard public/data/etsy-decision.json `
-  --report demo-output/2026-07-12-etsy-growth-radar.md `
+  --evidence-output public/data/etsy-evidence.json `
+  --report demo-output/2026-07-31-etsy-growth-radar.md `
   --agents public/data/agents.json
 ```
+
+Evidence Inbox v1 會先生成 manifest，再由 Trust Ledger 顯示每個 metric
+屬於 first-party、third-party、estimated、missing 或 stale。Normalized Etsy
+stats CSV 必須使用 `.agents/skills/mygiftstyle-etsy-growth-radar/assets/etsy-stats-template.csv`
+的 headers；空白、非法數字和真正的 `0` 會分開處理。Search terms、traffic
+sources 和 Share & Save 在 v1 只記錄 intake 狀態，不會自行推斷 attribution。
 
 `public/data/` 保持不進 Git。Repository 內的 `public/demo/` 只保存不含客戶
 資料的歷史 Demo summary，讓 clone 後仍可看到新功能。

@@ -4,48 +4,76 @@
 
 將 Etsy、eRank、EverBee 和營運紀錄的零散證據，轉成一條有來源、有狀態、有 AI 員工分工、由店主批准的決策流程。
 
-## 90 秒 Demo 流程
+## 90 秒 Presentation Script｜五幕故事
 
-### 0–15 秒：問題
+### 開場 0–10 秒：先講結果
 
-> 我有超過二百個 Etsy listings。真正問題不是沒有數據，而是數據、測試和過往決定分散；一個測試未完成，我可能已經改了另一個變數。
+畫面：直接開啟「明日簡報版 · 五幕故事」，停留喺第一幕 `任務`。
 
-### 15–30 秒：Decision Control Room
+台詞：
 
-展示暖色 hero、`Historical demo · not live`、Evidence date、First-party gaps 和 `Live action: Locked`。
+> 我今日想介紹嘅唔係另一個 Etsy 數據頁，而係一條由 shop evidence 去到一個 owner-approved decision 嘅工作流程。當資料、研究同過往決定分散，系統先幫我收窄成今日一個清楚嘅下一步。
 
-> 這不是 Etsy Stats 的複製品。它先告訴我資料有幾舊、哪些是第三方、以及為何不能立即改 listing。
+### 第一幕｜任務 10–25 秒：由混亂變成下一步
 
-### 30–50 秒：Decision pipeline
+停留喺 `任務`，或者按 `下一幕` 開始行五幕故事。
 
-展示 `Evidence → Diagnose → Draft → Owner Gate → Live Etsy → Learn`。
+台詞：
 
-- Evidence／Diagnose 已完成；
-- Draft 只做 positioning brief；
-- Live Etsy 維持 locked。
+> 第一幕係任務。店主唔需要先跳入好多工具，而係先知道而家發生緊乜、缺少乜，同埋下一步應該處理邊一件事。呢個畫面係整個工作流程嘅入口。
 
-### 50–70 秒：AI Office
+### 第二幕｜證據 25–40 秒：先相信來源，唔先相信猜測
 
-按 `查看 AI Office 分工`，展示六位員工接力：
+點擊 `證據`。
 
-`Data Consolidation → Growth Radar → Excel Analyst → Trend Research → Content Creator → Project Manager`
+台詞：
 
-> Skill 不是要自己登入 EverBee；Skill 是把同一種輸入、判斷規則、output 和安全邊界變成可重複工作。
+> 第二幕係 Evidence。系統唔係一見到數字就叫 AI 猜；每份資料都要睇 source、日期同 confirmation state。Missing、invalid 同 confirmed zero 會分開顯示，所以我知道係未有資料，定係真係零。
 
-### 70–90 秒：Codex handoff + Owner Gate
+### 第三幕｜決策 40–55 秒：證據不足就安全停低
 
-返回 `Etsy Decision`，按 `複製下一輪 Codex brief`，再按 `Need more evidence`。
+點擊 `決策`。
 
-> Dashboard 把下一輪任務交給 Codex，但沒有替我改 Etsy。AI 員工做機械工作，我保留商業判斷和 live 權限。
+台詞：
+
+> 有咗 evidence 之後，Decision control 先開始比較。如果 target、period 或 product truth 未齊，系統會停落嚟，清楚列出 blocker 同一個 safe next action。佢唔會扮有結論，亦唔會用不完整資料推我去改 listing。
+
+### 第四幕｜草稿 55–70 秒：將方向變成可審核草稿
+
+點擊 `草稿`。
+
+台詞：
+
+> 決定清楚之後，方向會變成一份可 review 嘅 Listing Brief，包括 title、tags、description 同 product claims。呢個係透明嘅 draft package，會連返證據；佢唔係自動 publish，亦唔係將商業判斷交畀 AI。
+
+### 第五幕｜批准 70–85 秒：最後決定仍然喺店主手上
+
+點擊 `批准`。
+
+台詞：
+
+> 最後由 Owner Gate 收口。AI 負責準備，店主檢查品牌語氣、產品真實性同商業判斷。即使 owner approve，都只代表可以手動處理；Dashboard 唔會連接 Etsy、修改 listing 或 publish 任何內容。
+
+### 收尾 85–90 秒：講清楚今日展示嘅範圍
+
+台詞：
+
+> 所以今日展示嘅重點唔係所有 function 已經完成，而係日後每個 function 都可以沿用同一個順序：evidence → decision → draft → owner approval。今日簡報只講清楚呢條主線，之後嘅功能會沿住同一個版面繼續 develop。
+
+## Presenter cues
+
+- 每幕只講一個 message；先讀 `觀眾應該記得嘅重點`，再用一句補充 workflow。
+- 唔需要逐個 demonstrate 所有 function；細節功能只作 supporting evidence。
+- 如果被問到未完成嘅 function，直接講：`呢個係 concept prototype，current functions 會分階段完成；而家先確立 workflow 同安全邊界。`
+- 全程保留 owner-controlled wording；唔好講成 AI 會自動改 listing、落廣告或者 publish。
 
 ## Demo 前檢查
 
-- Dashboard 在本機開到，frame 是 MyGiftStyle 暖啡／奶油色並以 Etsy 橙作 accent。
-- 大螢幕內容區明顯比舊版寬。
-- `Etsy Growth Radar` 顯示 `done`、執行時間及 output。
-- Pipeline、Integration ladder、Evidence debt 和 AI mission pod 正常顯示。
-- `複製下一輪 Codex brief` 可用。
-- Owner Gate 可切換及重設。
+- Dashboard 在本機開到，直接停喺「明日簡報版 · 五幕故事」，frame 係 MyGiftStyle 暖啡／奶油色並以 Etsy 橙作 accent。
+- 五幕 `任務 / 證據 / 決策 / 草稿 / 批准` 全部可見，畫面唔出現 Historical Report 或 Prototype workspace。
+- 每幕嘅 `觀眾應該記得嘅重點`、`證據先於建議` 同 `Live action 保持鎖定` 正常顯示。
+- `下一幕` 可以由第一幕行到第五幕；390px 畫面冇橫向 overflow。
+- 唔用假資料扮成 live Etsy 結果；所有數字、blocker 同草稿都標示為 local／概念展示狀態。
 - 不展示客戶、訂單、密碼、OAuth token 或 API key。
 - Git repo 保持 Private；`public/data/` 不進 Git。
 
