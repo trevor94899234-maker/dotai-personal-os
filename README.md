@@ -138,7 +138,6 @@ VAULT_DIR=/path/to/your/vault npm run sync:vault
 | `sample-vault/` | Demo 用 Obsidian vault（Harbour Lane 樣辦數據）— 想睇某個 view 要咩格式，入嚟抄 |
 | `public/data/*.json` | sync 產物，frontend 直接 fetch。唔好手改，改 vault 再 sync |
 | `.github/workflows/deploy.yml` | Push 上 main 就自動 build + deploy 上 GitHub Pages |
-| `middleware.ts` | Security headers（Vercel deploy 先用到，GitHub Pages 唔行呢個） |
 | `vite.config.ts` / `tailwind.config.js` / `tsconfig.json` | Build config，一般唔使掂 |
 
 ## 用 Codex 改呢個 project
