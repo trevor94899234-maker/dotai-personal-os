@@ -18,13 +18,20 @@ import EtsyDecisionView from "./views/EtsyDecisionView";
 
 type View = "tasks" | "today" | "daily" | "vault" | "office" | "etsy";
 
-const NAV: Array<{ id: View; label: string; icon: typeof CheckSquare }> = [
+const SHINEON_URL = import.meta.env.VITE_SHINEON_URL ?? "https://trevor94899234-maker.github.io/etsyshop-shineon-status/";
+
+type NavigationItem =
+  | { id: View; label: string; icon: typeof CheckSquare; href?: never }
+  | { id: "shineon"; label: string; icon: typeof CheckSquare; href: string };
+
+const NAV: NavigationItem[] = [
   { id: "today", label: "今日", icon: CalendarDays },
   { id: "etsy", label: "Etsy 決策", icon: Compass },
   { id: "office", label: "AI 辦公室", icon: Bot },
   { id: "tasks", label: "任務", icon: CheckSquare },
   { id: "daily", label: "每日筆記", icon: BookOpen },
   { id: "vault", label: "Vault 健康", icon: Activity },
+  { id: "shineon", label: "ShineOn 監察", icon: ExternalLink, href: SHINEON_URL },
 ];
 
 export default function App() {
@@ -57,31 +64,25 @@ export default function App() {
           className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-4 pb-4 sm:px-6 lg:flex-col lg:overflow-visible lg:px-4"
           aria-label="Main navigation"
         >
-          {NAV.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setView(id)}
-              aria-current={view === id ? "page" : undefined}
-              className={`flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium transition ${
-                view === id
-                  ? "bg-brand text-white shadow-lg shadow-black/15"
-                  : "text-cream/75 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <Icon size={17} />
-              {label}
-            </button>
-          ))}
-          <a
-            href="https://trevor94899234-maker.github.io/etsyshop-shineon-status/"
-            target="_blank"
-            rel="noreferrer"
-            className="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium text-cream/75 transition hover:bg-white/10 hover:text-white"
-          >
-            <ExternalLink size={17} />
-            ShineOn 監察
-          </a>
+          {NAV.map(({ id, label, icon: Icon, href }) => {
+            const active = !href && view === id;
+            const className = `flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium transition ${
+              active
+                ? "bg-brand text-white shadow-lg shadow-black/15"
+                : "text-cream/75 hover:bg-white/10 hover:text-white"
+            }`;
+            return href ? (
+              <a key={id} href={href} target="_blank" rel="noreferrer" className={className}>
+                <Icon size={17} />
+                {label}
+              </a>
+            ) : (
+              <button key={id} type="button" onClick={() => setView(id as View)} aria-current={active ? "page" : undefined} className={className}>
+                <Icon size={17} />
+                {label}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="hidden lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:block lg:p-4">

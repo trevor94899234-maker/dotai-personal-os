@@ -50,6 +50,9 @@ Repository 內的 `public/demo/` 與已追蹤 demo report 只保存匿名化示�
 
 **Live demo**: https://trevor94899234-maker.github.io/dotai-personal-os/
 
+**ShineOn Monitor** 顯示獨立的 ShineOn 店舖監察頁，會在新分頁開啟外部網站。
+Fork 可設定 `VITE_SHINEON_URL` 指向自己的 monitor，毋須修改 navigation code。
+
 ## 架構：一條 pipeline
 
 ```
