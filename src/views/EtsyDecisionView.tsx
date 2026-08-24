@@ -178,16 +178,18 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
 
   const pipeline = useMemo(() => {
     const gateState: PipelineState = choice === "pending" ? "waiting" : "complete";
+    const listingRows = decision?.source.listingRows ?? 0;
+    const duplicateGroups = decision?.metrics.duplicateTitleGroups ?? 0;
     return [
       {
         label: "Evidence",
-        detail: "Historical exports loaded",
-        state: "complete" as PipelineState,
+        detail: `${listingRows} listing rows loaded`,
+        state: (listingRows > 0 ? "complete" : "waiting") as PipelineState,
       },
       {
         label: "Diagnose",
-        detail: "Duplicate risk ranked",
-        state: "complete" as PipelineState,
+        detail: duplicateGroups > 0 ? `${duplicateGroups} duplicate groups found` : "No duplicate groups found",
+        state: (duplicateGroups > 0 ? "complete" : "waiting") as PipelineState,
       },
       {
         label: "Draft",
@@ -210,7 +212,7 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
         state: "waiting" as PipelineState,
       },
     ];
-  }, [choice]);
+  }, [choice, decision]);
 
   async function copyRunBrief() {
     try {

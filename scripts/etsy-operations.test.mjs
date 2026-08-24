@@ -392,6 +392,17 @@ test("Actual workspace is the canonical Etsy entry point and legacy actions rout
   assert.doesNotMatch(source, /onClick=\{\(\) => choose\(/);
 });
 
+test("Historical pipeline derives Evidence and Diagnose state from the loaded decision", async () => {
+  const source = await readFile(join(PROJECT_ROOT, "src", "views", "EtsyDecisionView.tsx"), "utf8");
+  assert.match(source, /const listingRows = decision\?\.source\.listingRows \?\? 0/);
+  assert.match(source, /const duplicateGroups = decision\?\.metrics\.duplicateTitleGroups \?\? 0/);
+  assert.match(source, /listingRows > 0 \? "complete" : "waiting"/);
+  assert.match(source, /duplicateGroups > 0 \? "complete" : "waiting"/);
+  assert.match(source, /No duplicate groups found/);
+  assert.match(source, /\}, \[choice, decision\]\)/);
+  assert.doesNotMatch(source, /Historical exports loaded|Duplicate risk ranked/);
+});
+
 test("Daily workflow follows one persisted active design and reuses the strict approval validator", async () => {
   const source = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
   assert.match(source, /ACTIVE_DESIGN_KEY/);
