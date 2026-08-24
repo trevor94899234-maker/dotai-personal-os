@@ -62,9 +62,12 @@ function defaultLoop(recipient: string, productType: string): KeywordResearchLoo
   return { designId: "", round: 1, stage: "seed-requested", queries: starterQueries(recipient, productType), requestReason: "Start with the exact recipient + story/memory intent. Use this round to see which wording has usable demand, click behavior, and manageable competition before expanding.", updatedAt: "" };
 }
 
-export default function KeywordResearchWorkspace() {
+type KeywordResearchWorkspaceProps = { selectedDesignId?: string; onSelectDesign?: (designId: string) => void };
+
+export default function KeywordResearchWorkspace({ selectedDesignId: controlledDesignId, onSelectDesign }: KeywordResearchWorkspaceProps = {}) {
   const [state, setState] = useState<EtsyOperationsState | null>(null);
-  const [selectedDesignId, setSelectedDesignId] = useState("demo-design-journal");
+  const [localDesignId, setLocalDesignId] = useState("demo-design-journal");
+  const selectedDesignId = controlledDesignId ?? localDesignId;
   const [source, setSource] = useState<EvidenceSource>("erank");
   const [researchDate, setResearchDate] = useState(new Date().toISOString().slice(0, 10));
   const [file, setFile] = useState<File | null>(null);
@@ -87,7 +90,10 @@ export default function KeywordResearchWorkspace() {
         const hydrated = hydrateListingDrafts(hydrateKeywordResearch(hydrateKnownDesigns(hydrateKnownProducts(legacyMigration(loaded)))));
         if (hydrated !== loaded) await saveOperationsState(hydrated);
         setState(hydrated);
-        if (!hydrated.designs.some((item) => item.id === selectedDesignId)) setSelectedDesignId(hydrated.designs[0]?.id ?? "");
+        if (!hydrated.designs.some((item) => item.id === selectedDesignId)) {
+          const fallbackId = hydrated.designs[0]?.id ?? "";
+          if (controlledDesignId !== undefined) onSelectDesign?.(fallbackId); else setLocalDesignId(fallbackId);
+        }
         setNotice("Upload a CSV/XLSX or screenshot once. Codex will analyze the source data; you do not need to type one row per keyword.");
       } catch { setState(DEFAULT_STATE); setNotice("Browser storage is unavailable. Your uploaded research packet will not survive a reload."); }
     })();
@@ -234,7 +240,7 @@ export default function KeywordResearchWorkspace() {
     {toast && <div role="status" aria-live="polite" className="fixed bottom-5 right-5 z-50 flex max-w-[min(26rem,calc(100vw-2rem))] items-start gap-3 rounded-2xl border border-[#B9D7C0] bg-white p-4 shadow-xl"><CheckCircle2 size={20} className="mt-0.5 shrink-0 text-sage" aria-hidden="true" /><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-sage">Dashboard received it</p><p className="mt-1 text-sm font-semibold text-ink">{toast}</p></div><button type="button" onClick={() => setToast(null)} aria-label="Close confirmation" className="ml-1 rounded-md p-1 text-muted hover:bg-[#F8EDE4] hover:text-ink"><X size={16} /></button></div>}
     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
       <div><div className="flex items-center gap-2 text-brand"><SearchCheck size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Keyword research data intake</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Upload the export or screenshot; let Codex do the keyword work</h3><p className="mt-2 max-w-3xl text-sm leading-6 text-muted">No spreadsheet-style manual entry is required. The design selection only tells us which product and customer intent this research belongs to.</p></div>
-      <label className="min-w-64 text-xs font-semibold text-ink">Working design<select value={selectedDesignId} onChange={(event) => setSelectedDesignId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{state.designs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label className="min-w-64 text-xs font-semibold text-ink">Working design<select value={selectedDesignId} onChange={(event) => { if (controlledDesignId !== undefined) onSelectDesign?.(event.target.value); else setLocalDesignId(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{state.designs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     </div>
     <div role="status" className="mt-4 rounded-xl border border-sage/25 bg-[#E8F0E6] px-4 py-3 text-xs font-semibold text-sage">{notice}</div>
     <section className="mt-5 rounded-2xl border border-[#D9E7DE] bg-[#F3F8F4] p-4" aria-label="Keyword research loop">

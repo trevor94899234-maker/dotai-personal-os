@@ -80,9 +80,27 @@ const DEMO_TAGS = ["family journal", "memory journal", "keepsake journal", "cust
 const DEMO_DRAFT_PACKAGE = `TITLE\nSample Personalized Family Journal, Custom Memory Keepsake and Story Gift\n\nTAGS\n${DEMO_TAGS.join("\n")}\n\nDESCRIPTION\nThis public demo shows where a draft listing package appears. Replace every sample statement with locally imported, owner-confirmed product facts and research before approval.\n\nFAQ / ACCURACY NOTES\n- Public demo copy only.\n- Material, size, production, shipping and price claims require private owner evidence.\n- Personalization wording must match the final local setup before approval.\n\nSOCIAL COPY\nSample draft-only social copy for a family keepsake journal.\n\nSTATUS\nDraft only — no Etsy publish, edit, or account connection.`;
 const DEFAULT_ACTIVE_DESIGN_ID = "demo-design-journal";
 const ACTIVE_DESIGN_KEY = "mygiftstyle-etsy-operations:active-design";
+const WORKING_CONTEXT_KEY = "mygiftstyle-etsy-operations:working-context-v1";
+type WorkMode = "listing-audit" | "product-development";
+type SavedWorkingContext = { mode?: WorkMode; activeDesignId?: string; selectedListingId?: string; periodStart?: string; periodEnd?: string };
+
+function loadWorkingContext(): SavedWorkingContext {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORKING_CONTEXT_KEY) ?? "{}") as SavedWorkingContext | null;
+    if (!parsed || typeof parsed !== "object") return {};
+    return {
+      mode: parsed.mode === "listing-audit" || parsed.mode === "product-development" ? parsed.mode : undefined,
+      activeDesignId: typeof parsed.activeDesignId === "string" ? parsed.activeDesignId : undefined,
+      selectedListingId: typeof parsed.selectedListingId === "string" ? parsed.selectedListingId : undefined,
+      periodStart: typeof parsed.periodStart === "string" ? parsed.periodStart : undefined,
+      periodEnd: typeof parsed.periodEnd === "string" ? parsed.periodEnd : undefined,
+    };
+  }
+  catch { return {}; }
+}
 
 function loadActiveDesignId() {
-  try { return localStorage.getItem(ACTIVE_DESIGN_KEY) || DEFAULT_ACTIVE_DESIGN_ID; }
+  try { return loadWorkingContext().activeDesignId || localStorage.getItem(ACTIVE_DESIGN_KEY) || DEFAULT_ACTIVE_DESIGN_ID; }
   catch { return DEFAULT_ACTIVE_DESIGN_ID; }
 }
 
@@ -128,12 +146,13 @@ function downloadJson(name: string, value: unknown) { const url = URL.createObje
 export default function EtsyOperationsHub({ initialTab = "today", presentationOnly = false }: { initialTab?: OperationsTab; presentationOnly?: boolean }) {
   const [workspaceMode, setWorkspaceMode] = useState<"presentation" | "prototype">(presentationOnly ? "presentation" : "prototype");
   const [operationsTab, setOperationsTab] = useState<OperationsTab>(initialTab);
+  const [workMode, setWorkMode] = useState<WorkMode>(() => loadWorkingContext().mode ?? "product-development");
   const [activeDesignId, setActiveDesignId] = useState(loadActiveDesignId);
   const [state, setState] = useState<EtsyOperationsState | null>(null);
   const [notice, setNotice] = useState("Loading local Operations Hub…");
   const [toast, setToast] = useState<string | null>(null);
-  const [selectedListingId, setSelectedListingId] = useState("");
-  const [auditPeriod, setAuditPeriod] = useState({ start: "", end: "" });
+  const [selectedListingId, setSelectedListingId] = useState(() => loadWorkingContext().selectedListingId ?? "");
+  const [auditPeriod, setAuditPeriod] = useState(() => { const saved = loadWorkingContext(); return { start: saved.periodStart ?? "", end: saved.periodEnd ?? "" }; });
   const [upload, setUpload] = useState<UploadDraft>(loadUploadDraft);
   const [fileDrafts, setFileDrafts] = useState<EvidenceUploadFileDraft[]>([]);
   const [batchItems, setBatchItems] = useState<EvidenceBatchItem[]>([]);
@@ -146,7 +165,12 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
 
   const showToast = (message: string) => { setNotice(message); setToast(message); };
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 6000); return () => window.clearTimeout(timer); }, [toast]);
-  useEffect(() => { try { localStorage.setItem(ACTIVE_DESIGN_KEY, activeDesignId); } catch { /* Active selection remains available for this session. */ } }, [activeDesignId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_DESIGN_KEY, activeDesignId);
+      localStorage.setItem(WORKING_CONTEXT_KEY, JSON.stringify({ mode: workMode, activeDesignId, selectedListingId, periodStart: auditPeriod.start, periodEnd: auditPeriod.end } satisfies SavedWorkingContext));
+    } catch { /* Working context remains available for this session. */ }
+  }, [activeDesignId, auditPeriod.end, auditPeriod.start, selectedListingId, workMode]);
   useEffect(() => { try { const { files: _files, ...recoverableDraft } = upload; sessionStorage.setItem(UPLOAD_DRAFT_KEY, JSON.stringify(recoverableDraft)); } catch { /* The visible form remains usable when browser storage is unavailable. */ } }, [upload]);
   useEffect(() => {
     void (async () => {
@@ -158,6 +182,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         setActiveDesignId((current) => migrated.designs.some((item) => item.id === current)
           ? current
           : migrated.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID)?.id ?? migrated.designs[0]?.id ?? "");
+        setSelectedListingId((current) => migrated.listings.some((item) => item.id === current) ? current : "");
         setNotice(migrated.artifacts.length ? "Local evidence restored. Originals remain on this device." : "Public demo records are ready. Import private owner data locally or add dated evidence next.");
       } catch {
         setState(DEFAULT_STATE);
@@ -279,8 +304,14 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     if (!nextDesignId) return;
     setActiveDesignId(nextDesignId);
   }
+  function startWork(nextMode: WorkMode) {
+    setWorkMode(nextMode);
+    setOperationsTab(nextMode === "listing-audit" ? "research" : "today");
+    showToast(nextMode === "listing-audit" ? "Existing Listing Audit opened. Choose one listing and one comparable period; the same context will follow every step." : "New Product Development opened. Choose one design; Research, Analysis and Listing Brief will stay attached to it.");
+  }
 
-  const auditGaps = useMemo(() => state ? auditMissing(state, selectedListingId, auditPeriod.start, auditPeriod.end) : [], [auditPeriod.end, auditPeriod.start, selectedListingId, state]);
+  const activeListingId = workMode === "listing-audit" ? selectedListingId : "";
+  const auditGaps = useMemo(() => state ? auditMissing(state, activeListingId, auditPeriod.start, auditPeriod.end) : [], [activeListingId, auditPeriod.end, auditPeriod.start, state]);
   const seedKeywords = listingStudio.seeds.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
   const draftTags = listingStudio.tags.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
   const tagIssues = useMemo(() => {
@@ -292,12 +323,12 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const journalEvidenceGaps = useMemo(() => state && journal ? productFactGaps(state, journal.id) : [], [journal, state]);
 
   function prepareEvidenceStep(kind: EvidenceIntakeKind) {
-    if (!selectedListingId || !auditPeriod.start || !auditPeriod.end || auditPeriod.start > auditPeriod.end) { showToast("Choose a listing and valid comparable start/end dates first."); return; }
+    if (!activeListingId || !auditPeriod.start || !auditPeriod.end || auditPeriod.start > auditPeriod.end) { showToast("Choose a listing and valid comparable start/end dates first."); return; }
     if ((fileDrafts.length || upload.sourceUrl.trim()) && !window.confirm("Switch the evidence lane? This clears the unsaved files or source link; saved evidence is not affected.")) return;
     const targetType = kind === "shop-stats" ? "shop" : "listing";
     classificationRunRef.current += 1;
     setFileDrafts([]);
-    setUpload((current) => ({ ...current, files: [], sourceUrl: "", kind, source: "etsy", periodStart: auditPeriod.start, periodEnd: auditPeriod.end, targetType, targetId: targetType === "shop" ? "shop" : selectedListingId }));
+    setUpload((current) => ({ ...current, files: [], sourceUrl: "", kind, source: "etsy", periodStart: auditPeriod.start, periodEnd: auditPeriod.end, targetType, targetId: targetType === "shop" ? "shop" : activeListingId }));
     setBatchItems([]);
     showToast(`${kind === "shop-stats" ? "Shop Stats" : kind === "listing-performance" ? "Listing Performance" : "Traffic Sources"} lane prepared for ${auditPeriod.start} → ${auditPeriod.end}. Add the export, save it, then review before confirmation.`);
   }
@@ -441,10 +472,10 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
 
   function auditPacket() {
     if (!state) return "";
-    const listing = state.listings.find((item) => item.id === selectedListingId);
-    if (auditGaps.length) return ["ETSY MISSING-DATA REQUEST", `Listing: ${listing?.title ?? selectedListingId} (${selectedListingId})`, `Period: ${auditPeriod.start || "missing"} to ${auditPeriod.end || "missing"}`, "", "Please provide:", ...auditGaps.map((item) => `- ${item}`), "", "Do not make a performance conclusion until these Etsy first-party inputs are confirmed."].join("\n");
-    const evidence = state.artifacts.filter((item) => item.ownerConfirmed && item.periodStart === auditPeriod.start && item.periodEnd === auditPeriod.end && (item.targetType === "shop" || item.targetId === selectedListingId));
-    return ["ETSY READ-ONLY AUDIT PACKET", `Listing: ${listing?.title ?? selectedListingId} (${selectedListingId})`, `Period: ${auditPeriod.start} to ${auditPeriod.end}`, "", ...evidence.flatMap((item) => [`[${item.kind}] ${item.fileName}`, `Authority: ${item.authority}; Source: ${item.source}; OCR: ${item.ocrStatus}`, `Metrics: ${item.metrics.map((metric) => `${metric.label}=${metric.value ?? metric.status}`).join(", ") || "none parsed"}`, ""]), "Requested Codex output: evidence-backed listing diagnosis, missing limits, one primary test variable, and draft-only next steps.", "Safety boundary: no direct Etsy change, pricing action, ad action, or publication."].join("\n");
+    const listing = state.listings.find((item) => item.id === activeListingId);
+    if (auditGaps.length) return ["ETSY MISSING-DATA REQUEST", `Listing: ${listing?.title ?? activeListingId} (${activeListingId})`, `Period: ${auditPeriod.start || "missing"} to ${auditPeriod.end || "missing"}`, "", "Please provide:", ...auditGaps.map((item) => `- ${item}`), "", "Do not make a performance conclusion until these Etsy first-party inputs are confirmed."].join("\n");
+    const evidence = state.artifacts.filter((item) => item.ownerConfirmed && item.periodStart === auditPeriod.start && item.periodEnd === auditPeriod.end && (item.targetType === "shop" || item.targetId === activeListingId));
+    return ["ETSY READ-ONLY AUDIT PACKET", `Listing: ${listing?.title ?? activeListingId} (${activeListingId})`, `Period: ${auditPeriod.start} to ${auditPeriod.end}`, "", ...evidence.flatMap((item) => [`[${item.kind}] ${item.fileName}`, `Authority: ${item.authority}; Source: ${item.source}; OCR: ${item.ocrStatus}`, `Metrics: ${item.metrics.map((metric) => `${metric.label}=${metric.value ?? metric.status}`).join(", ") || "none parsed"}`, ""]), "Requested Codex output: evidence-backed listing diagnosis, missing limits, one primary test variable, and draft-only next steps.", "Safety boundary: no direct Etsy change, pricing action, ad action, or publication."].join("\n");
   }
   function sellerDecisionPacket() {
     return [
@@ -493,16 +524,16 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
 
   if (!state) return <section className="rounded-[26px] border border-line bg-panel p-6 text-sm text-muted">{notice}</section>;
   const renderedState = state;
-  const selectedListing = state.listings.find((item) => item.id === selectedListingId);
+  const selectedListing = state.listings.find((item) => item.id === activeListingId);
   const reviewArtifact = reviewArtifactId ? state.artifacts.find((item) => item.id === reviewArtifactId) : undefined;
-  const sellerDecision = buildSellerDecision(state, selectedListingId);
+  const sellerDecision = buildSellerDecision(state, activeListingId);
   const decisionControl = buildDecisionControlState(state.artifacts, selectedListing, auditPeriod);
   const eligibleArtifacts = state.artifacts.filter((item) => item.ownerConfirmed);
   const activeDesign = state.designs.find((item) => item.id === activeDesignId)
     ?? state.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID);
   const coachDiagnosis = buildCoachDiagnosis(state, {
     activeDesignId: activeDesign?.id,
-    selectedListingId,
+    selectedListingId: activeListingId,
     periodStart: auditPeriod.start,
     periodEnd: auditPeriod.end,
   });
@@ -566,7 +597,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const workingItemState = deriveWorkingItemState(state, workingDesign?.id, workingProductId, workingDesignSeeds);
   const currentStage = workingItemState.currentStage;
   const contextArtifacts = operationsTab === "analysis"
-    ? state.artifacts.filter((item) => selectedListingId && (item.targetId === selectedListingId || item.targetType === "shop") && (!auditPeriod.start || item.periodStart === auditPeriod.start) && (!auditPeriod.end || item.periodEnd === auditPeriod.end))
+    ? state.artifacts.filter((item) => activeListingId && (item.targetId === activeListingId || item.targetType === "shop") && (!auditPeriod.start || item.periodStart === auditPeriod.start) && (!auditPeriod.end || item.periodEnd === auditPeriod.end))
     : operationsTab === "social"
       ? state.artifacts.filter((item) => item.kind === "social-results" && item.targetId === post.listingId)
       : operationsTab === "library"
@@ -682,6 +713,18 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       hasDraft={hasDraft}
       ownerApproved={hasApprovedDraft}
     /> : <>
+    <section className="rounded-[26px] border border-sage/25 bg-[#F3F8F4] p-4 shadow-card sm:p-5" aria-label="Choose a Dashboard work route">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-sage">Start here · 揀一條工作線</p><h2 className="mt-1 font-display text-xl font-bold text-ink sm:text-2xl">今日想處理現有 Listing，定開發新產品？</h2><p className="mt-1 text-sm text-muted">揀一次；Dashboard 會記住同一個項目，轉分頁或 reload 都唔使再揀。</p></div><span className="rounded-full border border-sage/20 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-sage">Saved on this device</span></div>
+      <div className="mt-4 grid gap-3 md:grid-cols-2" role="group" aria-label="Dashboard work routes">
+        <button type="button" aria-pressed={workMode === "listing-audit"} onClick={() => startWork("listing-audit")} className={`min-h-28 rounded-2xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${workMode === "listing-audit" ? "border-brand/35 bg-white shadow-card" : "border-line bg-[#FBF7F2] hover:border-brand/25"}`}><span className="flex items-center gap-2 text-brand"><ShieldCheck size={18} aria-hidden="true" /><span className="text-xs font-bold uppercase tracking-[0.12em]">Existing Listing Audit</span></span><span className="mt-2 block text-sm font-bold text-ink">檢查一個已上架 Listing</span><span className="mt-1 block text-xs leading-5 text-muted">鎖定 listing 同日期，補齊三份 Etsy evidence，再做診斷。</span></button>
+        <button type="button" aria-pressed={workMode === "product-development"} onClick={() => startWork("product-development")} className={`min-h-28 rounded-2xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 ${workMode === "product-development" ? "border-sage/35 bg-white shadow-card" : "border-line bg-[#FBF7F2] hover:border-sage/25"}`}><span className="flex items-center gap-2 text-sage"><Sparkles size={18} aria-hidden="true" /><span className="text-xs font-bold uppercase tracking-[0.12em]">New Product Development</span></span><span className="mt-2 block text-sm font-bold text-ink">由產品概念做到 Listing Brief</span><span className="mt-1 block text-xs leading-5 text-muted">鎖定 design，依次完成 market signal、keyword decision 同 draft。</span></button>
+      </div>
+      {workMode === "listing-audit" ? <div className="mt-4 grid gap-3 rounded-2xl border border-brand/20 bg-white p-4 sm:grid-cols-3" aria-label="Existing Listing working context">
+        <label className="text-xs font-semibold text-ink">Working listing<select value={selectedListingId} onChange={(event) => setSelectedListingId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal"><option value="">Choose a listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+        <label className="text-xs font-semibold text-ink">Comparable start<input type="date" value={auditPeriod.start} onChange={(event) => setAuditPeriod((current) => ({ ...current, start: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal" /></label>
+        <label className="text-xs font-semibold text-ink">Comparable end<input type="date" value={auditPeriod.end} onChange={(event) => setAuditPeriod((current) => ({ ...current, end: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal" /></label>
+      </div> : <div className="mt-4 rounded-2xl border border-sage/20 bg-white p-4" aria-label="New Product working context"><label className="block text-xs font-semibold text-ink">Working design<select value={activeDesign?.id ?? ""} onChange={(event) => chooseActiveDesign(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal sm:max-w-md">{state.designs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>}
+    </section>
     <details className="overflow-hidden rounded-[22px] border border-copper/25 bg-[#FFF9F3] shadow-card" aria-label="Implementation map">
       <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand sm:px-5">
         <span className="flex items-center gap-2 text-copper"><Workflow size={18} aria-hidden="true" /><span className="text-xs font-bold uppercase tracking-[0.16em]">Implementation map</span></span>
@@ -797,8 +840,8 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
           <SellerDecisionCard
         decision={sellerDecision}
         listings={state.listings}
-        selectedListingId={selectedListingId}
-        onSelectListing={setSelectedListingId}
+        selectedListingId={activeListingId}
+        onSelectListing={(listingId) => { setWorkMode("listing-audit"); setSelectedListingId(listingId); }}
         onOpenAnalysis={() => setOperationsTab("analysis")}
         onOpenResearch={() => setOperationsTab("research")}
         onCopy={() => void copy(sellerDecisionPacket(), "Seller decision brief copied. It remains local and draft-only.")}
@@ -815,13 +858,13 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     <div hidden={operationsTab !== "research"}>
       <EvidenceIntakeStepper
         state={state}
-        selectedListingId={selectedListingId}
+        selectedListingId={activeListingId}
         period={auditPeriod}
         upload={upload}
         fileDrafts={fileDrafts}
         batchItems={batchItems}
         reviewArtifact={reviewArtifact}
-        onSelectListing={setSelectedListingId}
+        onSelectListing={(listingId) => { setWorkMode("listing-audit"); setSelectedListingId(listingId); }}
         onPeriodChange={setAuditPeriod}
         onPrepareStep={prepareEvidenceStep}
         onUploadChange={updateUpload}
@@ -863,7 +906,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     </section>}
 
     <section hidden={operationsTab !== "analysis"} style={{ display: operationsTab === "analysis" ? undefined : "none" }} className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]" aria-label="Listing analysis evidence gate">
-      <article className="rounded-[26px] border border-brand/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-brand"><ShieldCheck size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Listing Audit</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">First-party evidence gate</h3><div className="mt-4 grid gap-3 sm:grid-cols-3"><label className="text-xs font-semibold text-ink">Listing<select value={selectedListingId} onChange={(event) => setSelectedListingId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="text-xs font-semibold text-ink">Start<input type="date" value={auditPeriod.start} onChange={(event) => setAuditPeriod((current) => ({ ...current, start: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">End<input type="date" value={auditPeriod.end} onChange={(event) => setAuditPeriod((current) => ({ ...current, end: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label></div>{selectedListing?.protected && <div className="mt-4 rounded-xl border border-brand/25 bg-[#FFF1E8] p-3 text-xs font-semibold text-brand">Protected listing: dashboard can audit and draft only. Do not change Etsy until you explicitly reopen this observation.</div>}<div className={`mt-4 rounded-2xl border p-4 ${auditGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{auditGaps.length ? `Still needed (${auditGaps.length})` : "Audit packet ready"}</div>{auditGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{auditGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">All required Etsy evidence is dated and owner-confirmed.</p>}</div><button type="button" onClick={() => void copy(auditPacket(), auditGaps.length ? "Missing-data request copied for Codex." : "Read-only audit packet copied for Codex.")} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Clipboard size={15} />{auditGaps.length ? "Copy missing-data request" : "Copy Codex Audit Packet"}</button></article>
+      <article className="rounded-[26px] border border-brand/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-brand"><ShieldCheck size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Listing Audit</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">First-party evidence gate</h3><div className="mt-4 grid gap-3 sm:grid-cols-3"><label className="text-xs font-semibold text-ink">Listing<select value={activeListingId} onChange={(event) => { setWorkMode("listing-audit"); setSelectedListingId(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="text-xs font-semibold text-ink">Start<input type="date" value={auditPeriod.start} onChange={(event) => setAuditPeriod((current) => ({ ...current, start: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">End<input type="date" value={auditPeriod.end} onChange={(event) => setAuditPeriod((current) => ({ ...current, end: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label></div>{selectedListing?.protected && <div className="mt-4 rounded-xl border border-brand/25 bg-[#FFF1E8] p-3 text-xs font-semibold text-brand">Protected listing: dashboard can audit and draft only. Do not change Etsy until you explicitly reopen this observation.</div>}<div className={`mt-4 rounded-2xl border p-4 ${auditGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{auditGaps.length ? `Still needed (${auditGaps.length})` : "Audit packet ready"}</div>{auditGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{auditGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">All required Etsy evidence is dated and owner-confirmed.</p>}</div><button type="button" onClick={() => void copy(auditPacket(), auditGaps.length ? "Missing-data request copied for Codex." : "Read-only audit packet copied for Codex.")} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Clipboard size={15} />{auditGaps.length ? "Copy missing-data request" : "Copy Codex Audit Packet"}</button></article>
       <article className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><FileDown size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Evidence health</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">What the dashboard can safely use</h3><dl className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">All artifacts</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.artifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Confirmed</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{eligibleArtifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Products</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.products.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Designs</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.designs.length}</dd></div></dl><p className="mt-4 text-xs leading-5 text-muted">Primary = Etsy or a platform’s own export. eRank/EverBee are supplemental. Cross-platform attribution remains an inference unless a tracked source confirms it.</p></article>
     </section>
 
@@ -908,7 +951,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       )}
     </aside>
     <section hidden={operationsTab !== "social"} style={{ display: operationsTab === "social" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><CheckCircle2 size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Social Campaign Tracker</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Phase 2: record content and outcomes without claiming attribution</h3><div className="mt-5 grid gap-3 md:grid-cols-3">{(["contentId", "assetName", "publishedOn", "copy", "cta", "url", "impressions", "clicks", "saves"] as const).map((key) => <label key={key} className="text-xs font-semibold text-ink">{key.replace(/([A-Z])/g, " $1")}<input type={key === "publishedOn" ? "date" : "text"} value={post[key]} onChange={(event) => setPost((current) => ({ ...current, [key]: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label>)}<label className="text-xs font-semibold text-ink">Platform<select value={post.platform} onChange={(event) => setPost((current) => ({ ...current, platform: event.target.value as ContentPost["platform"] }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option>Instagram</option><option>Pinterest</option><option>Facebook</option><option>Threads</option></select></label><label className="text-xs font-semibold text-ink">Target listing<select value={post.listingId} onChange={(event) => setPost((current) => ({ ...current, listingId: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="text-xs font-semibold text-ink">Outcome<select value={post.outcome} onChange={(event) => setPost((current) => ({ ...current, outcome: event.target.value as ContentPost["outcome"] }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option>Attribution unconfirmed</option><option>Repeat</option><option>Improve</option><option>Stop</option></select></label></div><button type="button" onClick={() => void addPost()} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Plus size={15} />Save social post</button><div className="mt-5 overflow-x-auto rounded-2xl border border-line"><table className="w-full min-w-[720px] text-left text-xs"><thead className="bg-[#F8F3ED] text-muted"><tr><th className="px-4 py-3">Content</th><th className="px-4 py-3">Platform</th><th className="px-4 py-3">Target</th><th className="px-4 py-3">Signals</th><th className="px-4 py-3">Decision</th></tr></thead><tbody>{state.posts.length === 0 ? <tr><td colSpan={5} className="px-4 py-5 text-muted">No social posts recorded. Likes and followers are intentionally not decision metrics here.</td></tr> : state.posts.map((item) => <tr key={item.id} className="border-t border-line"><td className="px-4 py-3 font-semibold text-ink">{item.contentId}<div className="mt-1 font-normal text-muted">{item.publishedOn}</div></td><td className="px-4 py-3">{item.platform}</td><td className="px-4 py-3">{item.listingId}</td><td className="px-4 py-3">Impressions {item.impressions || "missing"} · Clicks {item.clicks || "missing"} · Saves {item.saves || "missing"}</td><td className="px-4 py-3 font-semibold text-copper">{item.outcome}</td></tr>)}</tbody></table></div></section>
-    <div hidden={operationsTab !== "research"}><KeywordResearchWorkspace /></div>
+    <div hidden={operationsTab !== "research"}><KeywordResearchWorkspace selectedDesignId={activeDesignId} onSelectDesign={chooseActiveDesign} /></div>
     <div hidden={operationsTab !== "library"}><ProductFactsGate state={state} onCommit={commit} /></div>
     </>}
   </section>;

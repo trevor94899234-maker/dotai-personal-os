@@ -392,6 +392,18 @@ test("Actual workspace is the canonical Etsy entry point and legacy actions rout
   assert.doesNotMatch(source, /onClick=\{\(\) => choose\(/);
 });
 
+test("Dashboard starts from two explicit routes and persists one shared working context", async () => {
+  const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
+  const research = await readFile(join(PROJECT_ROOT, "src", "components", "KeywordResearchWorkspace.tsx"), "utf8");
+  for (const label of ["Existing Listing Audit", "New Product Development", "WORKING_CONTEXT_KEY", "selectedListingId", "periodStart", "periodEnd"]) assert.ok(hub.includes(label), `missing shared-context contract: ${label}`);
+  assert.match(hub, /localStorage\.setItem\(WORKING_CONTEXT_KEY/);
+  assert.match(hub, /aria-pressed=\{workMode === "listing-audit"\}/);
+  assert.match(hub, /aria-pressed=\{workMode === "product-development"\}/);
+  assert.match(hub, /KeywordResearchWorkspace selectedDesignId=\{activeDesignId\} onSelectDesign=\{chooseActiveDesign\}/);
+  assert.match(research, /controlledDesignId \?\? localDesignId/);
+  assert.doesNotMatch(research, /const \[selectedDesignId, setSelectedDesignId\]/);
+});
+
 test("Demo hydration seeds only empty collections and preserves existing owner records", async () => {
   const { DEFAULT_STATE, hydrateKnownDesigns, hydrateKnownProducts } = await core();
   const ownerState = {
