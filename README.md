@@ -34,7 +34,7 @@ npm.cmd run demo:etsy -- `
   --as-of 2026-07-31 `
   --dashboard public/data/etsy-decision.json `
   --evidence-output public/data/etsy-evidence.json `
-  --report demo-output/2026-07-31-etsy-growth-radar.md `
+  --report demo-output/private/2026-07-31-etsy-growth-radar.md `
   --agents public/data/agents.json
 ```
 
@@ -44,10 +44,11 @@ stats CSV 必須使用 `.agents/skills/mygiftstyle-etsy-growth-radar/assets/etsy
 的 headers；空白、非法數字和真正的 `0` 會分開處理。Search terms、traffic
 sources 和 Share & Save 在 v1 只記錄 intake 狀態，不會自行推斷 attribution。
 
-`public/data/` 保持不進 Git。Repository 內的 `public/demo/` 只保存不含客戶
-資料的歷史 Demo summary，讓 clone 後仍可看到新功能。
+`public/data/` 與 `demo-output/private/` 保持不進 Git，供本機真實店舖資料使用。
+Repository 內的 `public/demo/` 與已追蹤 demo report 只保存匿名化示範資料，
+讓 clone 後仍可看到新功能；不要把真實店舖 exports 或指標提交到公開 repository。
 
-**Live demo**: https://kennethlaw325.github.io/dotai-personal-os/
+**Live demo**: https://trevor94899234-maker.github.io/dotai-personal-os/
 
 ## 架構：一條 pipeline
 

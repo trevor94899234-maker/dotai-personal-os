@@ -17,7 +17,7 @@
       {
         "id": "everbee-listings",
         "label": "EverBee listing snapshot",
-        "fileName": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+        "fileName": "everbee-export-sample.csv",
         "received": true,
         "authority": "third-party",
         "validation": "valid",
@@ -27,7 +27,7 @@
       {
         "id": "everbee-keywords",
         "label": "Keyword context",
-        "fileName": "keywords20260712-12-zl7j6.csv",
+        "fileName": "keyword-export-sample.csv",
         "received": true,
         "authority": "third-party",
         "validation": "valid",
@@ -80,23 +80,23 @@
     {
       "id": "total-views",
       "label": "Total views",
-      "value": 607,
+      "value": 300,
       "authority": "third-party",
       "quality": "estimated",
       "freshness": "fresh",
       "ageDays": 22,
-      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "source": "everbee-export-sample.csv",
       "note": "EverBee context; not Etsy backend truth"
     },
     {
       "id": "total-favorites",
       "label": "Total favorites",
-      "value": 15,
+      "value": 12,
       "authority": "third-party",
       "quality": "estimated",
       "freshness": "fresh",
       "ageDays": 22,
-      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "source": "everbee-export-sample.csv",
       "note": "EverBee context"
     },
     {
@@ -124,41 +124,41 @@
     {
       "id": "duplicate-title-groups",
       "label": "Duplicate title groups",
-      "value": 13,
+      "value": 4,
       "authority": "derived-third-party",
       "quality": "diagnostic",
       "freshness": "fresh",
       "ageDays": 22,
-      "source": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
+      "source": "everbee-export-sample.csv",
       "note": "Useful for prioritisation; not a conversion conclusion"
     }
   ],
   "source": {
-    "listingExport": "last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv",
-    "listingRows": 263,
-    "keywordExport": "keywords20260712-12-zl7j6.csv",
-    "keywordRows": 580,
+    "listingExport": "everbee-export-sample.csv",
+    "listingRows": 120,
+    "keywordExport": "keyword-export-sample.csv",
+    "keywordRows": 200,
     "etsyStatsExport": null,
     "etsyStatsRows": 0,
     "authority": "EverBee third-party historical snapshot",
     "limitations": ["Not live Etsy data", "Estimated sales and conversion are not Etsy first-party facts", "Orders and revenue are missing"]
   },
   "metrics": {
-    "listings": 263,
-    "totalViews": 607,
-    "totalFavorites": 15,
-    "zeroViewListings": 98,
-    "zeroFavoriteListings": 249,
+    "listings": 120,
+    "totalViews": 300,
+    "totalFavorites": 12,
+    "zeroViewListings": 40,
+    "zeroFavoriteListings": 105,
     "orders": null,
     "revenue": null,
-    "duplicateTitleGroups": 13,
-    "duplicateListings": 27
+    "duplicateTitleGroups": 4,
+    "duplicateListings": 9
   },
   "focus": {
     "label": "Cannibalization Risk",
-    "title": "Tell Me Your Story Mom and Dad, Personalized Parents Memory Book Set, Legacy Journal Gift for Parents, Family Keepsake Journal",
-    "listingIds": ["4517034664", "4524703935"],
-    "views": 72,
+    "title": "Sample Personalized Family Memory Journal Gift",
+    "listingIds": ["0000000000", "0000000001"],
+    "views": 24,
     "favorites": 0,
     "reason": "這組由第三方 snapshot 排序；未有完整 first-party focus rows，不可作 conversion 結論。"
   },

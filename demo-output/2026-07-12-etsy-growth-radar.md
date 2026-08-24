@@ -13,11 +13,11 @@ tags: [etsy, demo, growth-radar, decision]
 
 ## 資料狀態
 
-- 模式：歷史真實資料 Demo，並非即時店舖狀態
-- Listing 來源：`last_1_month_mygiftstyle_analytics20260712-9-ynuhk8.csv`
-- Listing rows：263
-- Keyword 來源：`keywords20260712-12-zl7j6.csv`
-- Keyword rows：580
+- 模式：匿名化歷史 Demo，並非即時店舖狀態
+- Listing 來源：`everbee-export-sample.csv`
+- Listing rows：120
+- Keyword 來源：`keyword-export-sample.csv`
+- Keyword rows：200
 - Evidence as of：2026-07-12
 - 資料權威：EverBee third-party historical snapshot
 
@@ -25,12 +25,12 @@ tags: [etsy, demo, growth-radar, decision]
 
 | 指標 | 結果 |
 |---|---:|
-| Listings | 263 |
-| Total views | 607 |
-| Zero-view listings | 98 |
-| Zero-favorite listings | 249 |
-| Exact-title duplicate groups | 13 |
-| Listings inside duplicate groups | 27 |
+| Listings | 120 |
+| Total views | 300 |
+| Zero-view listings | 40 |
+| Zero-favorite listings | 105 |
+| Exact-title duplicate groups | 4 |
+| Listings inside duplicate groups | 9 |
 
 ## 今日三個 Targets
 
@@ -49,17 +49,17 @@ tags: [etsy, demo, growth-radar, decision]
 ## Focus cluster
 
 - 標籤：Cannibalization Risk
-- Listings：`4517034664`、`4524703935`
-- Combined views：72
+- Listings：`0000000000`、`0000000001`
+- Combined views：24
 - Combined favorites：0
-- Title：Tell Me Your Story Mom and Dad, Personalized Parents Memory Book Set, Legacy Journal Gift for Parents, Family Keepsake Journal
+- Title：Sample Personalized Family Memory Journal Gift
 
 ## 建議決定
 
 **任何 live Etsy 改動前，需要更多第一方證據**
 
 - 2 個 listings 使用完全相同的 title。
-- 所提供 snapshot 顯示這組有 72 combined views、0 favorites。
+- 所提供匿名化 snapshot 顯示這組有 24 combined views、0 favorites。
 - 這個訊號可用來排序，但不足以作 conversion 或 pricing 結論。
 
 ## 缺少資料
