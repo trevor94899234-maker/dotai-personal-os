@@ -74,11 +74,11 @@ function loadUploadDraft(): UploadDraft {
 const EMPTY_PRODUCT: Omit<Product, "id"> = { name: "", type: "Journal", material: "", size: "", productionMethod: "", fulfilmentSource: "", costSource: "", allowedClaims: "", blockedClaims: "", sourceNote: "" };
 const EMPTY_DESIGN: Omit<Design, "id"> = { name: "", productId: "", recipient: "", occasion: "", mockupStatus: "missing", assetName: "" };
 const EMPTY_POST: Omit<ContentPost, "id"> = { contentId: "", platform: "Pinterest", listingId: "", publishedOn: "", assetName: "", copy: "", cta: "", url: "", impressions: "", clicks: "", saves: "", outcome: "Attribution unconfirmed" };
-const HISTORICAL_TAG_REFERENCE = "Etsy Sonnet Memory - Historical Source Register (Obsidian: Trevor/30 - Notes/Projects/Etsy/Reference). Historical eRank/EverBee and strategy context only.";
-const DESIGN04_SEEDS = ["tell me your story journal", "mom story journal", "mom memory journal", "personalized journal for mom", "mom legacy journal"];
-const DESIGN04_TAGS = ["tell me your story", "mom story journal", "mom memory journal", "mom keepsake journal", "memory book for mom", "mom legacy journal", "gift for mom", "family memory gift", "vegan leather gift", "lined journal", "journal for mom", "mother memory gift", "family legacy gift"];
-const DESIGN04_DRAFT_PACKAGE = `TITLE\nPersonalized Mom Story Journal, Tell Me Your Story Gift for Mom, Custom Family Memory Keepsake, Vegan Leather Lined Notebook\n\nTAGS\n${DESIGN04_TAGS.join("\n")}\n\nDESCRIPTION\nGive Mom a meaningful place to keep the stories, memories, and advice your family wants to remember. This personalized vegan leather journal features the MD-1405 Design 04 printed cover, 200 lined pages, a brown elastic closure, and a ribbon bookmark.\n\nFAQ / ACCURACY NOTES\n- Printed cover design only; do not claim engraving, embossing, or debossing.\n- No guided prompts are included.\n- Production target: about 5 business days. Confirm destination-specific shipping at checkout.\n- Personalization wording is draft-only and must match the final custom-name setup before publishing.\n\nSOCIAL COPY\nA gift for Mom that makes space for the stories your family never wants to forget. Start a memory worth keeping.\n\nSTATUS\nDraft only — no Etsy publish, edit, or account connection.`;
-const DEFAULT_ACTIVE_DESIGN_ID = "design-md1405-04-journal";
+const HISTORICAL_TAG_REFERENCE = "Private historical keyword reference. Import owner context locally; current dated research and product truth remain authoritative.";
+const DEMO_SEEDS = ["personalized family journal", "family memory journal", "custom keepsake journal", "story journal gift", "personalized journal gift"];
+const DEMO_TAGS = ["family journal", "memory journal", "keepsake journal", "custom journal", "story journal", "journal gift", "family keepsake", "memory gift", "personalized gift", "sample journal", "gift for family", "custom keepsake", "story keepsake"];
+const DEMO_DRAFT_PACKAGE = `TITLE\nSample Personalized Family Journal, Custom Memory Keepsake and Story Gift\n\nTAGS\n${DEMO_TAGS.join("\n")}\n\nDESCRIPTION\nThis public demo shows where a draft listing package appears. Replace every sample statement with locally imported, owner-confirmed product facts and research before approval.\n\nFAQ / ACCURACY NOTES\n- Public demo copy only.\n- Material, size, production, shipping and price claims require private owner evidence.\n- Personalization wording must match the final local setup before approval.\n\nSOCIAL COPY\nSample draft-only social copy for a family keepsake journal.\n\nSTATUS\nDraft only — no Etsy publish, edit, or account connection.`;
+const DEFAULT_ACTIVE_DESIGN_ID = "demo-design-journal";
 const ACTIVE_DESIGN_KEY = "mygiftstyle-etsy-operations:active-design";
 
 function loadActiveDesignId() {
@@ -158,7 +158,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         setActiveDesignId((current) => migrated.designs.some((item) => item.id === current)
           ? current
           : migrated.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID)?.id ?? migrated.designs[0]?.id ?? "");
-        setNotice(migrated.artifacts.length ? "Local evidence restored. Originals remain on this device." : "Journal baseline, Acrylic LED Plaque baseline, and MD-1405 Design 04 Journal are ready. Add dated evidence or keyword research next.");
+        setNotice(migrated.artifacts.length ? "Local evidence restored. Originals remain on this device." : "Public demo records are ready. Import private owner data locally or add dated evidence next.");
       } catch {
         setState(DEFAULT_STATE);
         setNotice("Local browser storage is unavailable. Your input remains on screen but will not survive a reload.");
@@ -428,7 +428,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     const draft = state.listingDrafts.find((item) => item.id === id);
     if (!draft) return;
     const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === draft.designId);
-    const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DESIGN04_SEEDS : [];
+    const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DEMO_SEEDS : [];
     const approvalIssues = collectListingDraftApprovalIssues(state, draft, approvalSeeds);
     if (approvalIssues.length) {
       showToast(`Approval is blocked: ${approvalIssues[0]}.`);
@@ -478,17 +478,17 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       return;
     }
     const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === activeDesign.id);
-    const isDesign04 = activeDesign.id === DEFAULT_ACTIVE_DESIGN_ID;
+    const isDemoDesign = activeDesign.id === DEFAULT_ACTIVE_DESIGN_ID;
     setListingStudio({
       productId: activeDesign.productId,
       designId: activeDesign.id,
-      positioning: isDesign04 ? "Mom / family legacy / memory gift. A printed journal that helps preserve stories and reflections without claiming guided prompts." : "",
-      seeds: (linkedLoop?.queries?.length ? linkedLoop.queries : isDesign04 ? DESIGN04_SEEDS : []).join("\n"),
-      tags: isDesign04 ? DESIGN04_TAGS.join("\n") : "",
-      packageText: isDesign04 ? DESIGN04_DRAFT_PACKAGE : "",
+      positioning: isDemoDesign ? "Public demo positioning for a family keepsake journal. Replace with owner-confirmed local context before approval." : "",
+      seeds: (linkedLoop?.queries?.length ? linkedLoop.queries : isDemoDesign ? DEMO_SEEDS : []).join("\n"),
+      tags: isDemoDesign ? DEMO_TAGS.join("\n") : "",
+      packageText: isDemoDesign ? DEMO_DRAFT_PACKAGE : "",
     });
     setOperationsTab("results");
-    showToast(isDesign04 ? "Design 04 Journal Listing Brief is ready for your draft review. Nothing was sent to Etsy." : `${activeDesign.name} Listing Studio opened. Add its own positioning and Codex draft; Design 04 demo content was not reused.`);
+    showToast(isDemoDesign ? "The public demo Listing Brief is ready for review. Nothing was sent to Etsy." : `${activeDesign.name} Listing Studio opened. Add its own positioning and Codex draft; public demo content was not reused.`);
   }
 
   if (!state) return <section className="rounded-[26px] border border-line bg-panel p-6 text-sm text-muted">{notice}</section>;
@@ -511,7 +511,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const activeSeeds = activeLoop?.queries?.length
     ? activeLoop.queries
     : activeDesign?.id === DEFAULT_ACTIVE_DESIGN_ID
-      ? DESIGN04_SEEDS
+      ? DEMO_SEEDS
       : listingStudio.designId === activeDesign?.id
         ? seedKeywords
         : [];
@@ -542,7 +542,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const activeDesignContent = deriveActiveDesignContent(
     state,
     activeDesign?.id,
-    { designId: DEFAULT_ACTIVE_DESIGN_ID, sourcePacket: DESIGN04_DRAFT_PACKAGE },
+    { designId: DEFAULT_ACTIVE_DESIGN_ID, sourcePacket: DEMO_DRAFT_PACKAGE },
     { designId: listingStudio.designId, sourcePacket: listingStudio.packageText },
   );
   const primaryDashboard = buildPrimaryDashboardSummary({
@@ -883,7 +883,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         <div className="mt-4 space-y-2">
           {state.listingDrafts.map((draft) => {
             const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === draft.designId);
-            const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DESIGN04_SEEDS : [];
+            const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DEMO_SEEDS : [];
             const approvalIssues = collectListingDraftApprovalIssues(state, draft, approvalSeeds);
             const isApproved = draft.status === "approved-for-manual-entry";
             const isCurrentDraft = deriveActiveDraftState(state.listingDrafts, draft.designId).currentDraft?.id === draft.id;

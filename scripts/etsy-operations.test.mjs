@@ -57,7 +57,7 @@ test("XLSX parsing preserves confirmed zero, missing, and invalid metrics", asyn
 
 test("Seller decision card stays Unknown until one comparable first-party window is complete", async () => {
   const { DEFAULT_STATE, buildSellerDecision } = await core();
-  const decision = buildSellerDecision(structuredClone(DEFAULT_STATE), "4517034664", "2026-08-16");
+  const decision = buildSellerDecision(structuredClone(DEFAULT_STATE), "demo-listing-a", "2026-08-16");
   assert.equal(decision.status, "collect-data");
   assert.match(decision.whatToUpdate, /Unknown \/ Collect data/);
   assert.equal(decision.signals.views.status, "missing");
@@ -69,11 +69,11 @@ test("Seller decision card preserves explicit zero without treating it as missin
   const state = structuredClone(DEFAULT_STATE);
   const window = { periodStart: "2026-08-01", periodEnd: "2026-08-07" };
   state.artifacts = [
-    { id: "performance", kind: "listing-performance", source: "etsy", authority: "primary", fileName: "performance.csv", mimeType: "text/csv", uploadedAt: "2026-08-08T00:00:00.000Z", ...window, targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: ["Views", "Favorites", "Orders"], metrics: [{ label: "Views", value: 0, status: "confirmed-zero" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }, { label: "Revenue", value: 0, status: "confirmed-zero" }] },
+    { id: "performance", kind: "listing-performance", source: "etsy", authority: "primary", fileName: "performance.csv", mimeType: "text/csv", uploadedAt: "2026-08-08T00:00:00.000Z", ...window, targetType: "listing", targetId: "demo-listing-a", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: ["Views", "Favorites", "Orders"], metrics: [{ label: "Views", value: 0, status: "confirmed-zero" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }, { label: "Revenue", value: 0, status: "confirmed-zero" }] },
     { id: "shop", kind: "shop-stats", source: "etsy", authority: "primary", fileName: "shop.csv", mimeType: "text/csv", uploadedAt: "2026-08-08T00:00:00.000Z", ...window, targetType: "shop", targetId: "shop", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] },
-    { id: "traffic", kind: "traffic-sources", source: "etsy", authority: "primary", fileName: "traffic.csv", mimeType: "text/csv", uploadedAt: "2026-08-08T00:00:00.000Z", ...window, targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] },
+    { id: "traffic", kind: "traffic-sources", source: "etsy", authority: "primary", fileName: "traffic.csv", mimeType: "text/csv", uploadedAt: "2026-08-08T00:00:00.000Z", ...window, targetType: "listing", targetId: "demo-listing-a", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] },
   ];
-  const decision = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const decision = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(decision.signals.views.value, 0);
   assert.equal(decision.signals.views.status, "confirmed-zero");
   assert.equal(decision.signals.orders.status, "confirmed-zero");
@@ -91,18 +91,18 @@ test("Seller decision card blocks invalid metrics and only proposes one draft va
   const window = { periodStart: "2026-08-01", periodEnd: "2026-08-14" };
   const common = { source: "etsy", authority: "primary", uploadedAt: "2026-08-15T00:00:00.000Z", ...window, ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] };
   state.artifacts = [
-    { id: "performance", kind: "listing-performance", fileName: "performance.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "4517034664", metrics: [{ label: "Views", value: 48, status: "confirmed" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }, { label: "Revenue", value: 0, status: "confirmed-zero" }] },
+    { id: "performance", kind: "listing-performance", fileName: "performance.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "demo-listing-a", metrics: [{ label: "Views", value: 48, status: "confirmed" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }, { label: "Revenue", value: 0, status: "confirmed-zero" }] },
     { id: "shop", kind: "shop-stats", fileName: "shop.csv", mimeType: "text/csv", ...common, targetType: "shop", targetId: "shop" },
-    { id: "traffic", kind: "traffic-sources", fileName: "traffic.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "4517034664" },
+    { id: "traffic", kind: "traffic-sources", fileName: "traffic.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "demo-listing-a" },
   ];
-  const ready = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const ready = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(ready.status, "ready");
   assert.match(ready.whatToUpdate, /static maintenance map/);
   assert.match(ready.observationWindow, /does not create a new threshold/);
   assert.doesNotMatch(ready.whatToUpdate, /first-image/);
 
   state.artifacts[0].metrics[1] = { label: "Favorites", value: null, status: "invalid" };
-  const blocked = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const blocked = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(blocked.status, "collect-data");
   assert.ok(blocked.missingEvidence.some((item) => item.includes("Favorites is invalid")));
   assert.match(blocked.whatToUpdate, /Unknown \/ Collect data/);
@@ -115,11 +115,11 @@ test("Seller decision card keeps a protected listing inside its observation gate
   const window = { periodStart: "2026-08-01", periodEnd: "2026-08-14" };
   const common = { source: "etsy", authority: "primary", uploadedAt: "2026-08-15T00:00:00.000Z", ...window, ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] };
   state.artifacts = [
-    { id: "performance", kind: "listing-performance", fileName: "performance.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "4517034664", metrics: [{ label: "Views", value: 48, status: "confirmed" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }] },
+    { id: "performance", kind: "listing-performance", fileName: "performance.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "demo-listing-a", metrics: [{ label: "Views", value: 48, status: "confirmed" }, { label: "Favorites", value: 0, status: "confirmed-zero" }, { label: "Orders", value: 0, status: "confirmed-zero" }] },
     { id: "shop", kind: "shop-stats", fileName: "shop.csv", mimeType: "text/csv", ...common, targetType: "shop", targetId: "shop" },
-    { id: "traffic", kind: "traffic-sources", fileName: "traffic.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "4517034664" },
+    { id: "traffic", kind: "traffic-sources", fileName: "traffic.csv", mimeType: "text/csv", ...common, targetType: "listing", targetId: "demo-listing-a" },
   ];
-  const decision = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const decision = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(decision.status, "ready");
   assert.match(decision.protectedNote, /unchanged until 2026-08-20/);
   assert.match(decision.protectedNote, /local draft/);
@@ -127,15 +127,15 @@ test("Seller decision card keeps a protected listing inside its observation gate
 
 test("Working context routes missing inputs and OCR review to evidence intake", async () => {
   const { buildWorkingContext } = await core();
-  const base = { tab: "today", currentStage: 2, designName: "Design 04 Journal", selectedListingTitle: "Parents 2-Book Set", selectedListingProtected: false, selectedProductName: "Journal", socialListingTitle: "", briefGapCount: 1, researchCount: 0, hasKeywordDecision: false, hasDraft: false, hasApprovedDraft: false, auditGapCount: 3, metricStatus: undefined, ocrReviewStatus: "none", ownerConfirmationNeeded: false, productEvidenceGapCount: 1 };
-  assert.deepEqual(buildWorkingContext(base), { item: "Design 04 Journal", stage: "Today · Stage 2 of 5", status: "Missing inputs", tone: "attention", action: "Add the next missing input", actionTab: "research" });
+  const base = { tab: "today", currentStage: 2, designName: "public demo Journal", selectedListingTitle: "Parents 2-Book Set", selectedListingProtected: false, selectedProductName: "Journal", socialListingTitle: "", briefGapCount: 1, researchCount: 0, hasKeywordDecision: false, hasDraft: false, hasApprovedDraft: false, auditGapCount: 3, metricStatus: undefined, ocrReviewStatus: "none", ownerConfirmationNeeded: false, productEvidenceGapCount: 1 };
+  assert.deepEqual(buildWorkingContext(base), { item: "public demo Journal", stage: "Today · Stage 2 of 5", status: "Missing inputs", tone: "attention", action: "Add the next missing input", actionTab: "research" });
   assert.equal(buildWorkingContext({ ...base, briefGapCount: 0, ocrReviewStatus: "pending" }).status, "OCR review needed");
   assert.equal(buildWorkingContext({ ...base, briefGapCount: 0, ocrReviewStatus: "unreadable" }).status, "OCR visual review only");
 });
 
 test("Working context keeps protected listings read-only and drafts local", async () => {
   const { buildWorkingContext } = await core();
-  const base = { tab: "analysis", currentStage: 3, designName: "Design 04 Journal", selectedListingTitle: "Parents 2-Book Set", selectedListingProtected: true, selectedProductName: "Journal", socialListingTitle: "", briefGapCount: 0, researchCount: 1, hasKeywordDecision: true, hasDraft: false, hasApprovedDraft: false, auditGapCount: 0, metricStatus: undefined, ocrReviewStatus: "none", ownerConfirmationNeeded: false, productEvidenceGapCount: 0 };
+  const base = { tab: "analysis", currentStage: 3, designName: "public demo Journal", selectedListingTitle: "Parents 2-Book Set", selectedListingProtected: true, selectedProductName: "Journal", socialListingTitle: "", briefGapCount: 0, researchCount: 1, hasKeywordDecision: true, hasDraft: false, hasApprovedDraft: false, auditGapCount: 0, metricStatus: undefined, ocrReviewStatus: "none", ownerConfirmationNeeded: false, productEvidenceGapCount: 0 };
   const protectedContext = buildWorkingContext(base);
   assert.equal(protectedContext.status, "Protected / read-only");
   assert.equal(protectedContext.action, "Prepare the read-only audit packet");
@@ -167,17 +167,17 @@ test("Working context keeps invalid, confirmed zero, owner confirmation, and own
   assert.equal(buildWorkingContext({ ...base, tab: "results", hasDraft: true, hasApprovedDraft: true }).status, "Approved for manual entry");
 });
 
-test("Working item state cannot inherit Design 04 research, keyword, draft, or approval state", async () => {
+test("Working item state cannot inherit public demo research, keyword, draft, or approval state", async () => {
   const { DEFAULT_STATE, deriveWorkingItemState } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const design04Id = "design-md1405-04-journal";
+  const demoDesignId = "demo-design-journal";
   state.designs.push({ id: "design-other", name: "Other journal design", productId: "product-standard-journal", recipient: "Friend", occasion: "Birthday", mockupStatus: "ready", assetName: "other.png" });
-  state.artifacts.push({ id: "design04-keywords", kind: "keyword-research", source: "erank", authority: "supplemental", fileName: "design04.csv", mimeType: "text/csv", uploadedAt: "2026-08-15T00:00:00.000Z", periodStart: "2026-08-15", periodEnd: "2026-08-15", targetType: "design", targetId: design04Id, ownerConfirmed: true, ocrStatus: "not-needed", rows: 5, headers: ["Keyword"], metrics: [] });
-  addReadyDraftEvidence(state, design04Id, "product-standard-journal", false);
-  state.keywordResearchLoops.push({ designId: design04Id, round: 1, stage: "conclusion-ready", queries: ["one", "two", "three", "four", "five"], requestReason: "Design 04 only", primaryKeyword: "mom journal", updatedAt: "2026-08-15T00:00:00.000Z" });
-  state.listingDrafts.push({ id: "design04-draft", productId: "product-standard-journal", designId: design04Id, sourcePacket: "Design 04 only", tags: [], evidenceIds: ["design04-keywords"], status: "approved-for-manual-entry", createdAt: "2026-08-15T00:00:00.000Z", approvedAt: "2026-08-15T00:00:00.000Z" });
+  state.artifacts.push({ id: "demo-keywords", kind: "keyword-research", source: "erank", authority: "supplemental", fileName: "demo.csv", mimeType: "text/csv", uploadedAt: "2026-08-15T00:00:00.000Z", periodStart: "2026-08-15", periodEnd: "2026-08-15", targetType: "design", targetId: demoDesignId, ownerConfirmed: true, ocrStatus: "not-needed", rows: 5, headers: ["Keyword"], metrics: [] });
+  addReadyDraftEvidence(state, demoDesignId, "product-standard-journal", false);
+  state.keywordResearchLoops.push({ designId: demoDesignId, round: 1, stage: "conclusion-ready", queries: ["one", "two", "three", "four", "five"], requestReason: "public demo only", primaryKeyword: "mom journal", updatedAt: "2026-08-15T00:00:00.000Z" });
+  state.listingDrafts.push({ id: "design04-draft", productId: "product-standard-journal", designId: demoDesignId, sourcePacket: "public demo only", tags: [], evidenceIds: ["demo-keywords"], status: "approved-for-manual-entry", createdAt: "2026-08-15T00:00:00.000Z", approvedAt: "2026-08-15T00:00:00.000Z" });
 
-  const design04 = deriveWorkingItemState(state, design04Id, "product-standard-journal", ["one", "two", "three", "four", "five"]);
+  const design04 = deriveWorkingItemState(state, demoDesignId, "product-standard-journal", ["one", "two", "three", "four", "five"]);
   const other = deriveWorkingItemState(state, "design-other", "product-standard-journal", ["alpha", "beta", "gamma", "delta", "epsilon"]);
   assert.equal(design04.researchCount, 1);
   assert.equal(design04.hasKeywordDecision, true);
@@ -186,13 +186,13 @@ test("Working item state cannot inherit Design 04 research, keyword, draft, or a
   assert.equal(other.hasKeywordDecision, false);
   assert.equal(other.hasDraft, false);
   assert.equal(other.hasApprovedDraft, false);
-  assert.ok(other.briefGapCount > 0, "unrelated Design 04 keyword evidence must not complete another design's brief");
+  assert.ok(other.briefGapCount > 0, "unrelated public demo keyword evidence must not complete another design's brief");
 });
 
 test("Current draft approval never falls back to an older approved package", async () => {
   const { DEFAULT_STATE, deriveActiveDraftState, deriveWorkingItemState } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const designId = "design-md1405-04-journal";
+  const designId = "demo-design-journal";
   const productId = "product-standard-journal";
   const seeds = ["mom journal", "story journal", "memory journal", "family journal", "gift journal"];
   addReadyDraftEvidence(state, designId, productId);
@@ -216,7 +216,7 @@ test("Current draft approval never falls back to an older approved package", asy
 test("Owner Gate rejects blocked claims anywhere in the saved customer-facing package", async () => {
   const { DEFAULT_STATE, collectListingDraftApprovalIssues } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const designId = "design-md1405-04-journal";
+  const designId = "demo-design-journal";
   const productId = "product-standard-journal";
   const seeds = ["mom journal", "story journal", "memory journal", "family journal", "gift journal"];
   addReadyDraftEvidence(state, designId, productId);
@@ -236,24 +236,24 @@ test("Owner Gate rejects blocked claims anywhere in the saved customer-facing pa
   }
 });
 
-test("Active non-Design04 content uses its own Results package and Today labels", async () => {
+test("Active non-demo content uses its own Results package and Today labels", async () => {
   const { DEFAULT_STATE, deriveActiveDesignContent } = await core();
   const state = structuredClone(DEFAULT_STATE);
   const designId = "design-sunflower-teacher-journal";
   const designName = "Sunflower Teacher Gratitude Journal";
   const sourcePacket = `TITLE\n${designName} Gift\n\nDESCRIPTION\nA ${designName} keepsake for a teacher.`;
-  const demoPacket = "TITLE\nDesign 04 Mom Story Demo\n\nDESCRIPTION\nMD-1405 Design 04 demo copy.";
+  const demoPacket = "TITLE\nPublic Demo Sample\n\nDESCRIPTION\npublic demo copy.";
   state.designs.push({ id: designId, name: designName, productId: "product-standard-journal", recipient: "Teacher", occasion: "Appreciation", mockupStatus: "ready", assetName: "sunflower-teacher.png" });
   state.listingDrafts.push({ id: "sunflower-current", productId: "product-standard-journal", designId, sourcePacket, tags: [], evidenceIds: [], status: "draft", createdAt: "2026-08-20T00:00:00.000Z" });
 
-  const content = deriveActiveDesignContent(state, designId, { designId: "design-md1405-04-journal", sourcePacket: demoPacket });
+  const content = deriveActiveDesignContent(state, designId, { designId: "demo-design-journal", sourcePacket: demoPacket });
   assert.equal(content.designName, designName);
   assert.ok(content.todayLabel.includes(designName));
   assert.equal(content.designStepDetail, designName);
   assert.equal(content.draftTitle, `${designName} Gift`);
   assert.equal(content.sourcePacket, sourcePacket);
-  assert.equal(JSON.stringify(content).includes("Design 04 Mom Story Demo"), false);
-  assert.equal(JSON.stringify(content).includes("MD-1405 Design 04 demo copy"), false);
+  assert.equal(JSON.stringify(content).includes("Public Demo Sample"), false);
+  assert.equal(JSON.stringify(content).includes("public demo copy"), false);
 });
 
 test("Primary dashboard turns the active design state into analysis, decision, and business action", async () => {
@@ -267,7 +267,7 @@ test("Primary dashboard turns the active design state into analysis, decision, a
   assert.equal(research.actionLabel, "完成關鍵字取捨");
   assert.equal(research.actionTab, "research");
   assert.match(research.analysisFocus, /2 份 research input/);
-  assert.doesNotMatch(JSON.stringify(research), /Design 04|Collect|evidence blocked/i);
+  assert.doesNotMatch(JSON.stringify(research), /public demo|Collect|evidence blocked/i);
 
   const keyword = buildPrimaryDashboardSummary({ designName: "Teacher design", researchCount: 2, primaryKeyword: "teacher journal", supportingKeywordCount: 3, hasDraft: false, hasApprovedDraft: false, draftReadyForApproval: false });
   assert.match(keyword.analysisFocus, /teacher journal/);
@@ -282,12 +282,12 @@ test("Primary dashboard turns the active design state into analysis, decision, a
 test("Working Context currentStage follows the actual working design state", async () => {
   const { DEFAULT_STATE, buildWorkingContext, deriveWorkingItemState } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const design04Id = "design-md1405-04-journal";
+  const demoDesignId = "demo-design-journal";
   const otherDesignId = "design-other-stage";
   state.designs.push({ id: otherDesignId, name: "Other design", productId: "product-standard-journal", recipient: "Friend", occasion: "Birthday", mockupStatus: "ready", assetName: "other.png" });
   const evidence = (id, kind, targetType, targetId) => ({ id, kind, source: "owner", authority: "primary", fileName: `${id}.csv`, mimeType: "text/csv", uploadedAt: "2026-08-15T00:00:00.000Z", periodStart: "2026-08-15", periodEnd: "2026-08-15", targetType, targetId, ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: ["Keyword"], metrics: [] });
   state.artifacts.push(evidence("other-facts", "product-facts", "product", "product-standard-journal"), evidence("other-cost", "cost-fulfilment", "product", "product-standard-journal"), evidence("other-research", "keyword-research", "design", otherDesignId));
-  const design04State = deriveWorkingItemState(state, design04Id, "product-standard-journal", []);
+  const design04State = deriveWorkingItemState(state, demoDesignId, "product-standard-journal", []);
   const otherState = deriveWorkingItemState(state, otherDesignId, "product-standard-journal", ["one", "two", "three", "four", "five"]);
   assert.notEqual(design04State.currentStage, otherState.currentStage);
   assert.equal(design04State.currentStage, 1);
@@ -392,6 +392,19 @@ test("Actual workspace is the canonical Etsy entry point and legacy actions rout
   assert.doesNotMatch(source, /onClick=\{\(\) => choose\(/);
 });
 
+test("Demo hydration seeds only empty collections and preserves existing owner records", async () => {
+  const { DEFAULT_STATE, hydrateKnownDesigns, hydrateKnownProducts } = await core();
+  const ownerState = {
+    ...structuredClone(DEFAULT_STATE),
+    products: [{ ...DEFAULT_STATE.products[0], id: "owner-product", name: "Private owner product" }],
+    designs: [{ ...DEFAULT_STATE.designs[0], id: "owner-design", productId: "owner-product", name: "Private owner design" }],
+  };
+  assert.equal(hydrateKnownProducts(ownerState), ownerState);
+  assert.equal(hydrateKnownDesigns(ownerState), ownerState);
+  assert.deepEqual(hydrateKnownProducts({ ...ownerState, products: [] }).products.map((item) => item.id), DEFAULT_STATE.products.map((item) => item.id));
+  assert.deepEqual(hydrateKnownDesigns({ ...ownerState, designs: [] }).designs.map((item) => item.id), DEFAULT_STATE.designs.map((item) => item.id));
+});
+
 test("Historical pipeline derives Evidence and Diagnose state from the loaded decision", async () => {
   const source = await readFile(join(PROJECT_ROOT, "src", "views", "EtsyDecisionView.tsx"), "utf8");
   assert.match(source, /const listingRows = decision\?\.source\.listingRows \?\? 0/);
@@ -411,7 +424,7 @@ test("Daily workflow follows one persisted active design and reuses the strict a
   assert.match(source, /function chooseActiveDesign\(nextDesignId: string\)[\s\S]*setActiveDesignId\(nextDesignId\)/);
   assert.match(source, /onChange=\{\(event\) => chooseActiveDesign\(event\.target\.value\)\}/);
   assert.match(source, /collectListingDraftApprovalIssues\(state, draft, approvalSeeds\)/);
-  assert.match(source, /draft\.designId === DEFAULT_ACTIVE_DESIGN_ID \? DESIGN04_SEEDS : \[\]/);
+  assert.match(source, /draft\.designId === DEFAULT_ACTIVE_DESIGN_ID \? DEMO_SEEDS : \[\]/);
 });
 
 test("Canonical evidence workflow has mobile cards and focuses the review heading", async () => {
@@ -437,12 +450,12 @@ test("Trust Ledger keeps the desktop table and uses stacked, breakable mobile ca
 test("Audit packet gate requires three owner-confirmed Etsy first-party artifacts", async () => {
   const { DEFAULT_STATE, auditMissing } = await core();
   const base = structuredClone(DEFAULT_STATE);
-  const artifact = (kind) => ({ id: kind, kind, source: "etsy", authority: "primary", fileName: `${kind}.csv`, mimeType: "text/csv", uploadedAt: "2026-08-09T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-07", targetType: kind === "shop-stats" ? "shop" : "listing", targetId: kind === "shop-stats" ? "shop" : "4517034664", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] });
-  assert.equal(auditMissing(base, "4517034664", "2026-08-01", "2026-08-07").length, 3);
+  const artifact = (kind) => ({ id: kind, kind, source: "etsy", authority: "primary", fileName: `${kind}.csv`, mimeType: "text/csv", uploadedAt: "2026-08-09T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-07", targetType: kind === "shop-stats" ? "shop" : "listing", targetId: kind === "shop-stats" ? "shop" : "demo-listing-a", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], metrics: [] });
+  assert.equal(auditMissing(base, "demo-listing-a", "2026-08-01", "2026-08-07").length, 3);
   base.artifacts = [artifact("shop-stats"), artifact("listing-performance"), artifact("traffic-sources")];
-  assert.deepEqual(auditMissing(base, "4517034664", "2026-08-01", "2026-08-07"), []);
+  assert.deepEqual(auditMissing(base, "demo-listing-a", "2026-08-01", "2026-08-07"), []);
   base.artifacts[1].ownerConfirmed = false;
-  assert.deepEqual(auditMissing(base, "4517034664", "2026-08-01", "2026-08-07"), ["Etsy Listing Performance"]);
+  assert.deepEqual(auditMissing(base, "demo-listing-a", "2026-08-01", "2026-08-07"), ["Etsy Listing Performance"]);
 });
 
 test("New listing gate blocks missing product facts, linked design, and research evidence", async () => {
@@ -468,7 +481,7 @@ test("Product confirmation requires confirmed facts and cost evidence", async ()
 test("Keyword decision gate requires a bounded, evidence-backed primary and supporting choice", async () => {
   const { DEFAULT_STATE, keywordResearchGaps } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const designId = "design-md1405-04-journal";
+  const designId = "demo-design-journal";
   assert.deepEqual(keywordResearchGaps(state, designId), [
     "5–15 seed keywords",
     "at least one dated eRank, EverBee, or Etsy Marketplace Insights evidence reference",
@@ -495,7 +508,7 @@ test("Keyword decision gate requires a bounded, evidence-backed primary and supp
 test("Keyword upload gate accepts a confirmed research export linked to the design product", async () => {
   const { DEFAULT_STATE, keywordEvidenceGaps } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const designId = "design-md1405-04-journal";
+  const designId = "demo-design-journal";
   assert.equal(keywordEvidenceGaps(state, designId).length, 1);
   state.artifacts.push({ id: "erank-export", kind: "keyword-research", source: "erank", authority: "supplemental", fileName: "erank-journal-2026-08-09.csv", mimeType: "text/csv", uploadedAt: "2026-08-09T00:00:00.000Z", periodStart: "2026-08-09", periodEnd: "2026-08-09", targetType: "product", targetId: "product-standard-journal", ownerConfirmed: true, ocrStatus: "not-needed", rows: 25, headers: ["Keyword"], metrics: [], contentText: "Keyword,Searches\npersonalized mom journal,100" });
   assert.deepEqual(keywordEvidenceGaps(state, designId), []);
@@ -504,7 +517,7 @@ test("Keyword upload gate accepts a confirmed research export linked to the desi
 test("Keyword upload gate excludes a confirmed screenshot until OCR text is confirmed", async () => {
   const { DEFAULT_STATE, keywordEvidenceGaps } = await core();
   const state = structuredClone(DEFAULT_STATE);
-  const designId = "design-md1405-04-journal";
+  const designId = "demo-design-journal";
   const screenshot = { id: "erank-screenshot", kind: "keyword-research", source: "erank", authority: "supplemental", fileName: "results.png", mimeType: "image/png", uploadedAt: "2026-08-09T00:00:00.000Z", periodStart: "2026-08-09", periodEnd: "2026-08-09", targetType: "product", targetId: "product-standard-journal", ownerConfirmed: true, ocrStatus: "confirmed", rows: null, headers: [], metrics: [], contentText: "" };
   state.artifacts.push(screenshot);
   assert.equal(keywordEvidenceGaps(state, designId).length, 1);
@@ -570,19 +583,19 @@ test("Delivery evidence proves downstream eligibility and truth recomputation", 
     headers: [],
     metrics,
   });
-  const performance = artifact("listing-performance", "listing", "4517034664", [
+  const performance = artifact("listing-performance", "listing", "demo-listing-a", [
     { label: "Views", value: 12, status: "confirmed" },
     { label: "Favorites", value: 0, status: "confirmed-zero" },
     { label: "Orders", value: 0, status: "confirmed-zero" },
     { label: "Revenue", value: 0, status: "confirmed-zero" },
   ]);
-  state.artifacts = [performance, artifact("shop-stats", "shop", "shop"), artifact("traffic-sources", "listing", "4517034664")];
+  state.artifacts = [performance, artifact("shop-stats", "shop", "shop"), artifact("traffic-sources", "listing", "demo-listing-a")];
   assert.equal(isEvidenceEligibleForDecision(performance), true);
-  const decision = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const decision = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(decision.status, "ready");
   assert.equal(decision.signals.views.value, 12);
   performance.metrics[0] = { label: "Views", value: null, status: "invalid" };
-  const recomputed = buildSellerDecision(state, "4517034664", "2026-08-16");
+  const recomputed = buildSellerDecision(state, "demo-listing-a", "2026-08-16");
   assert.equal(recomputed.status, "collect-data");
   assert.equal(recomputed.signals.views.status, "invalid");
   console.log("eligible");
@@ -635,14 +648,14 @@ test("One mixed dump classifies every file independently across kinds, sources, 
   const { classifyEvidenceFile, isEvidenceFileClassificationReady } = await core();
   const targets = [
     { targetType: "shop", targetId: "shop", labels: ["entire shop", "shop stats"] },
-    { targetType: "listing", targetId: "4517034664", labels: ["4517034664", "Mom and Dad 2-Book Set"] },
-    { targetType: "listing", targetId: "4524703935", labels: ["4524703935", "Protected listing"] },
+    { targetType: "listing", targetId: "demo-listing-a", labels: ["demo-listing-a", "Sample active listing"] },
+    { targetType: "listing", targetId: "demo-listing-b", labels: ["demo-listing-b", "Protected listing"] },
     { targetType: "product", targetId: "product-standard-journal", labels: ["product-standard-journal", "Standard Journal"] },
   ];
   const fixtures = [
     { name: "etsy-shop-stats-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Visits", "Orders"], expected: ["shop-stats", "etsy", "shop", "shop", "2026-08-01", "2026-08-20"] },
-    { name: "etsy-listing-performance-4517034664-2026-07-01_to_2026-07-31.csv", type: "text/csv", headers: ["Listing ID", "Views", "Favorites", "Orders"], expected: ["listing-performance", "etsy", "listing", "4517034664", "2026-07-01", "2026-07-31"] },
-    { name: "etsy-traffic-sources-4524703935-2026-06-01_to_2026-06-30.csv", type: "text/csv", headers: ["Traffic source", "Visits"], expected: ["traffic-sources", "etsy", "listing", "4524703935", "2026-06-01", "2026-06-30"] },
+    { name: "etsy-listing-performance-demo-listing-a-2026-07-01_to_2026-07-31.csv", type: "text/csv", headers: ["Listing ID", "Views", "Favorites", "Orders"], expected: ["listing-performance", "etsy", "listing", "demo-listing-a", "2026-07-01", "2026-07-31"] },
+    { name: "etsy-traffic-sources-demo-listing-b-2026-06-01_to_2026-06-30.csv", type: "text/csv", headers: ["Traffic source", "Visits"], expected: ["traffic-sources", "etsy", "listing", "demo-listing-b", "2026-06-01", "2026-06-30"] },
     { name: "erank-keyword-research-product-standard-journal-2026-08-10.csv", type: "text/csv", headers: ["Keyword", "Searches", "Competition"], expected: ["keyword-research", "erank", "product", "product-standard-journal", "2026-08-10", "2026-08-10"] },
   ];
   const classifications = fixtures.map((fixture) => classifyEvidenceFile({ ...fixture, targets }));
@@ -655,10 +668,10 @@ test("Ambiguous mixed-signal files stay provisional while valid siblings remain 
   const { classifyEvidenceFile, isEvidenceFileClassificationReady } = await core();
   const targets = [
     { targetType: "shop", targetId: "shop", labels: ["entire shop", "shop stats"] },
-    { targetType: "listing", targetId: "4517034664", labels: ["4517034664"] },
+    { targetType: "listing", targetId: "demo-listing-a", labels: ["demo-listing-a"] },
   ];
-  const valid = classifyEvidenceFile({ name: "etsy-listing-performance-4517034664-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Listing ID", "Views", "Orders"], targets });
-  const ambiguous = classifyEvidenceFile({ name: "etsy-erank-traffic-sources-keyword-research-4517034664-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Keyword", "Searches", "Traffic source"], targets });
+  const valid = classifyEvidenceFile({ name: "etsy-listing-performance-demo-listing-a-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Listing ID", "Views", "Orders"], targets });
+  const ambiguous = classifyEvidenceFile({ name: "etsy-erank-traffic-sources-keyword-research-demo-listing-a-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Keyword", "Searches", "Traffic source"], targets });
   const screenshot = classifyEvidenceFile({ name: "etsy-shop-stats-2026-08-01_to_2026-08-20.png", type: "image/png", targets });
   assert.equal(isEvidenceFileClassificationReady(valid), true);
   assert.equal(isEvidenceFileClassificationReady(screenshot), true, "a filename may classify screenshot lineage, but it does not create OCR or numeric truth");
@@ -672,7 +685,7 @@ test("Ambiguous mixed-signal files stay provisional while valid siblings remain 
 
 test("Derived groups canonicalize labels, use exact duplicates once, and keep complementary metrics auditable", async () => {
   const { deriveEvidenceGroups } = await core();
-  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
+  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "demo-listing-a", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
   const artifacts = [
     { ...common, id: "views-a", fileName: "views-a.csv", metrics: [{ label: "Listing Views", value: 12, status: "confirmed" }] },
     { ...common, id: "views-b", fileName: "views-b.csv", metrics: [{ label: "views", value: 12, status: "confirmed" }] },
@@ -692,7 +705,7 @@ test("Derived groups canonicalize labels, use exact duplicates once, and keep co
 
 test("Derived groups surface value or truth-status conflicts while excluding unconfirmed files", async () => {
   const { deriveEvidenceGroups } = await core();
-  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "4517034664", ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
+  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "demo-listing-a", ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
   const artifact = (id, value, status, ownerConfirmed = true) => ({ ...common, id, fileName: `${id}.csv`, ownerConfirmed, metrics: [{ label: "Views", value, status }] });
   let [group] = deriveEvidenceGroups([artifact("confirmed", 10, "confirmed"), artifact("unconfirmed", 999, "confirmed", false)], { asOf: "2026-08-23" });
   assert.equal(group.metrics[0].value, 10);
@@ -710,11 +723,11 @@ test("Derived groups surface value or truth-status conflicts while excluding unc
 
 test("Derived grouping never bleeds across source, kind, target, or period; age is neutral unless owner configures staleness", async () => {
   const { deriveEvidenceGroups, isEvidencePeriodStale } = await core();
-  const base = { source: "etsy", authority: "primary", fileName: "evidence.png", mimeType: "image/png", uploadedAt: "2026-06-02T00:00:00.000Z", periodStart: "2026-06-01", periodEnd: "2026-06-01", targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "unreadable", rows: null, headers: [], metrics: [{ label: "Views", value: 3, status: "confirmed" }], contentText: "" };
+  const base = { source: "etsy", authority: "primary", fileName: "evidence.png", mimeType: "image/png", uploadedAt: "2026-06-02T00:00:00.000Z", periodStart: "2026-06-01", periodEnd: "2026-06-01", targetType: "listing", targetId: "demo-listing-a", ownerConfirmed: true, ocrStatus: "unreadable", rows: null, headers: [], metrics: [{ label: "Views", value: 3, status: "confirmed" }], contentText: "" };
   const artifacts = [
     { ...base, id: "old-ocr", kind: "listing-performance" },
     { ...base, id: "other-period", kind: "listing-performance", periodStart: "2026-08-01", periodEnd: "2026-08-01" },
-    { ...base, id: "other-target", kind: "listing-performance", targetId: "4524703935" },
+    { ...base, id: "other-target", kind: "listing-performance", targetId: "demo-listing-b" },
     { ...base, id: "other-kind", kind: "traffic-sources" },
     { ...base, id: "other-source", kind: "listing-performance", source: "owner", authority: "inference" },
   ];

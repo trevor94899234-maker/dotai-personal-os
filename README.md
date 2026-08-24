@@ -47,6 +47,7 @@ sources 和 Share & Save 在 v1 只記錄 intake 狀態，不會自行推斷 att
 `public/data/` 與 `demo-output/private/` 保持不進 Git，供本機真實店舖資料使用。
 Repository 內的 `public/demo/` 與已追蹤 demo report 只保存匿名化示範資料，
 讓 clone 後仍可看到新功能；不要把真實店舖 exports 或指標提交到公開 repository。
+Vite production build 只會複製 `public/demo/`；本機 `public/data/` 不會進入 `dist/` 或公開部署。
 
 **Live demo**: https://trevor94899234-maker.github.io/dotai-personal-os/
 
@@ -158,4 +159,4 @@ Fork 咗之後，成個 codebase 就係你嘅。常見改法：
 | `npm run preview` | Serve `dist/`（:4173） |
 | `npm run typecheck` | 淨 typecheck |
 | `npm run test` | Scripts 嘅 node:test |
-| `npm run security:audit` | Build 產物安全檢查 |
+| `npm run security:audit` | Public data、app source、build assets 同 vault 安全檢查 |

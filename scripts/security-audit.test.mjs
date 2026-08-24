@@ -65,6 +65,22 @@ test('hkid: catches A123456(7) format', () => {
   assert.ok(findings.some((f) => f.pattern === 'hkid'));
 });
 
+test('public-code privacy rules catch numeric IDs and Windows user paths', () => {
+  const findings = scanText('const listingId = "1234567890"; const source = "C:\\\\Users\\\\sample-owner\\\\Downloads\\\\file.csv";', 'src/example.ts');
+  assert.ok(findings.some((f) => f.pattern === 'public-numeric-id'));
+  assert.ok(findings.some((f) => f.pattern === 'windows-user-path'));
+});
+
+test('public numeric ID rule ignores unrelated ten-digit library constants', () => {
+  const findings = scanText('const mask = 1073741824; const sequence = "0123456789";', 'dist/assets/vendor.js');
+  assert.equal(findings.some((f) => f.pattern === 'public-numeric-id'), false);
+});
+
+test('public-code privacy rules do not inspect ignored private JSON', () => {
+  const findings = scanText('{"listingId":"1234567890"}', 'public/data/private-owner-state.json');
+  assert.equal(findings.some((f) => f.pattern === 'public-numeric-id'), false);
+});
+
 test('markdown-outbound-image: catches outbound https image', () => {
   const findings = scanText('![alt](https://attacker.com/track?id=1)');
   assert.equal(findings.filter((f) => f.pattern === 'markdown-outbound-image').length, 1);

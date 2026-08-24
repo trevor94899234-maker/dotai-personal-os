@@ -52,20 +52,19 @@ function artifactLines(artifact: EvidenceArtifact) {
   ];
 }
 
-function starterQueries(designName: string, recipient: string, productType: string) {
-  if (/MD-1405 Design 04/i.test(designName)) return ["tell me your story mom", "mom story journal", "mom memory journal", "personalized mom journal", "mom keepsake journal"];
+function starterQueries(recipient: string, productType: string) {
   const person = recipient.trim().toLowerCase() || "gift";
   const product = productType.toLowerCase().includes("journal") ? "journal" : productType.toLowerCase();
   return [`personalized ${person} ${product}`, `${person} memory ${product}`, `${person} keepsake ${product}`, `custom ${person} ${product}`, `${person} gift`];
 }
 
-function defaultLoop(designName: string, recipient: string, productType: string): KeywordResearchLoop {
-  return { designId: "", round: 1, stage: "seed-requested", queries: starterQueries(designName, recipient, productType), requestReason: "Start with the exact recipient + story/memory intent. Use this round to see which wording has usable demand, click behavior, and manageable competition before expanding.", updatedAt: "" };
+function defaultLoop(recipient: string, productType: string): KeywordResearchLoop {
+  return { designId: "", round: 1, stage: "seed-requested", queries: starterQueries(recipient, productType), requestReason: "Start with the exact recipient + story/memory intent. Use this round to see which wording has usable demand, click behavior, and manageable competition before expanding.", updatedAt: "" };
 }
 
 export default function KeywordResearchWorkspace() {
   const [state, setState] = useState<EtsyOperationsState | null>(null);
-  const [selectedDesignId, setSelectedDesignId] = useState("design-md1405-04-journal");
+  const [selectedDesignId, setSelectedDesignId] = useState("demo-design-journal");
   const [source, setSource] = useState<EvidenceSource>("erank");
   const [researchDate, setResearchDate] = useState(new Date().toISOString().slice(0, 10));
   const [file, setFile] = useState<File | null>(null);
@@ -106,9 +105,9 @@ export default function KeywordResearchWorkspace() {
   const gaps = useMemo(() => state && selectedDesignId ? keywordEvidenceGaps(state, selectedDesignId) : [], [selectedDesignId, state]);
   const savedLoop = state?.keywordResearchLoops.find((item) => item.designId === selectedDesignId);
   const activeLoop = useMemo(() => {
-    const fallback = defaultLoop(selectedDesign?.name ?? "", selectedDesign?.recipient ?? "", selectedProduct?.type ?? "Journal");
+    const fallback = defaultLoop(selectedDesign?.recipient ?? "", selectedProduct?.type ?? "Journal");
     return savedLoop ?? { ...fallback, designId: selectedDesignId };
-  }, [savedLoop, selectedDesign?.name, selectedDesign?.recipient, selectedDesignId, selectedProduct?.type]);
+  }, [savedLoop, selectedDesign?.recipient, selectedDesignId, selectedProduct?.type]);
   const evidenceArrivedForActiveRound = packetEvidence.some((item) => new Date(item.uploadedAt).getTime() >= new Date(activeLoop.updatedAt).getTime());
   const loopStage = (activeLoop.stage === "seed-requested" || activeLoop.stage === "need-deeper-research") && evidenceArrivedForActiveRound ? "evidence-received" as const : activeLoop.stage;
   const isEvidenceQualityRetry = loopStage === "need-deeper-research" && /data-quality retry|capture the existing|upload its csv/i.test(activeLoop.requestReason);

@@ -157,7 +157,7 @@
   "focus": {
     "label": "Cannibalization Risk",
     "title": "Sample Personalized Family Memory Journal Gift",
-    "listingIds": ["0000000000", "0000000001"],
+    "listingIds": ["demo-listing-a", "demo-listing-b"],
     "views": 24,
     "favorites": 0,
     "reason": "這組由第三方 snapshot 排序；未有完整 first-party focus rows，不可作 conversion 結論。"

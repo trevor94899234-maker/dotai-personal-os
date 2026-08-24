@@ -8,8 +8,8 @@ type UploadRecord = { fileName: string; uploadedAt: string; periodStart: string;
 type Listing = { id: string; title: string; role: "canonical" | "no-touch"; tone: string };
 
 const LISTINGS: Listing[] = [
-  { id: "4517034664", title: "Mom and Dad 2-Book Set", role: "canonical", tone: "border-brand/25 bg-[#FFF1E8]" },
-  { id: "4524703935", title: "Parents duplicate listing", role: "no-touch", tone: "border-line bg-[#F8F3ED]" },
+  { id: "demo-listing-a", title: "Sample active listing", role: "canonical", tone: "border-brand/25 bg-[#FFF1E8]" },
+  { id: "demo-listing-b", title: "Sample protected comparison", role: "no-touch", tone: "border-line bg-[#F8F3ED]" },
 ];
 
 const REQUIREMENTS: Array<{ id: RequirementId; label: string; detail: string; scope: "shop" | "listing" | "traffic" }> = [
@@ -165,7 +165,7 @@ export default function ListingAuditWorkspace() {
 
       <div className="mt-5 rounded-2xl border border-copper/25 bg-[#FFF8F1] p-4"><div className="text-[10px] font-bold uppercase tracking-[0.14em] text-copper">Next action</div><div className="mt-1 text-base font-bold text-ink">{nextAction}</div><div className="mt-2 text-xs leading-5 text-muted">CSV is first-party evidence. Screenshot OCR remains provisional until you confirm it. Missing metrics will be carried into the audit as evidence gaps, not silently treated as zero.</div></div>
 
-      <details className="mt-4 rounded-2xl border border-line bg-white p-4"><summary className="cursor-pointer text-sm font-bold text-ink">What to capture from Etsy</summary><div className="mt-3 grid gap-3 text-xs leading-5 text-muted md:grid-cols-3"><div><div className="font-semibold text-ink">1. Shop Stats overview</div>Stats overview for the audit period: Visits, Orders, Conversion Rate, Revenue. Upload CSV where available.</div><div><div className="font-semibold text-ink">2. Listing performance</div>Shop Manager → Stats → Shoppers viewed your listings. Capture listing 4517034664 with Views, Favorites, Orders and Revenue.</div><div><div className="font-semibold text-ink">3. Traffic / Etsy Search</div>Capture Traffic Sources and Etsy Search terms for the same period. Include the column headings and all visible figures.</div></div></details>
+      <details className="mt-4 rounded-2xl border border-line bg-white p-4"><summary className="cursor-pointer text-sm font-bold text-ink">What to capture from Etsy</summary><div className="mt-3 grid gap-3 text-xs leading-5 text-muted md:grid-cols-3"><div><div className="font-semibold text-ink">1. Shop Stats overview</div>Stats overview for the audit period: Visits, Orders, Conversion Rate, Revenue. Upload CSV where available.</div><div><div className="font-semibold text-ink">2. Listing performance</div>Shop Manager → Stats → Shoppers viewed your listings. Capture the locally selected listing with Views, Favorites, Orders and Revenue.</div><div><div className="font-semibold text-ink">3. Traffic / Etsy Search</div>Capture Traffic Sources and Etsy Search terms for the same period. Include the column headings and all visible figures.</div></div></details>
 
       <div className="mt-5 space-y-3">
         {REQUIREMENTS.map((requirement) => { const record = uploads[requirement.id]; return (

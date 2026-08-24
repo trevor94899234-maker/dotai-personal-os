@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Personal OS — security audit
-// 掃 public/data/*.json + sample-vault/ (or 學員 vault) 入面：
+// 掃 public data, source, built assets + sample-vault/ (or 學員 vault) 入面：
 //   1) API key pattern (sk-, hf_, ANTHROPIC_KEY=, OPENAI_KEY=, AWS_ access keys ...)
 //   2) PII pattern (email, HK 8-digit phone, HKID format)
 //   3) Outbound URL (markdown image / link to https://... non-whitelisted)
@@ -9,7 +9,7 @@
 //
 // Usage:
 //   npm run security:audit
-//   node scripts/security-audit.mjs                  # default: ./public/data + ./sample-vault + ./vault
+//   node scripts/security-audit.mjs                  # default: public inputs + source + built assets + vaults
 //   node scripts/security-audit.mjs <path> [<path>]  # custom scan paths
 //
 // Skip a file from audit: add `audit_skip: true` to its frontmatter (L7 fix).
@@ -19,9 +19,9 @@ import path from 'node:path';
 
 const ROOT = process.cwd();
 const args = process.argv.slice(2);
-// Default scan: shipped JSON + sample vault + 學員自己 vault (Q8.4)
+// Default scan: shipped JSON, public app source/build, sample vault + 學員自己 vault (Q8.4)
 // walk() ENOENT-safe — 學員未 import 自己 vault 唔會 break
-const SCAN_PATHS = args.length > 0 ? args : ['public/data', 'sample-vault', 'vault'];
+const SCAN_PATHS = args.length > 0 ? args : ['public/data', 'public/demo', 'src', 'dist', 'sample-vault', 'vault'];
 
 const ALLOWED_OUTBOUND_HOSTS = new Set([
   // 加入學員信嘅 CDN domain（e.g. own vault assets, school-issued URLs）
@@ -40,6 +40,8 @@ export const RULES = {
   'generic-secret-assign': { severity: 'P0', regex: /(?<![A-Za-z0-9])(OPENAI_KEY|ANTHROPIC_KEY|API_KEY|SECRET|TOKEN|PASSWORD)\s*=\s*['"]?[A-Za-z0-9_\-]{12,}/gi },
   'private-key-block':     { severity: 'P0', regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----/g },
   'hkid':                  { severity: 'P0', regex: /\b[A-Z]{1,2}\d{6}\(?[A0-9]\)?/g },
+  'public-numeric-id':     { severity: 'P0', scope: 'public-code', regex: /\b(?:listings?|listingIds?|selectedListingId|targetId)\b[^\r\n]{0,80}?\b\d{10}\b/gi },
+  'windows-user-path':     { severity: 'P0', scope: 'public-code', regex: /\b[A-Za-z]:\\{1,2}Users\\{1,2}[^"'`\r\n]+/g },
   // L5 fix: balanced-paren URL extractor — supports `\)` escaped close paren in markdown URLs.
   'markdown-outbound-image': { severity: 'P0', regex: /!\[[^\]]*\]\((https?:\/\/(?:\\\)|[^)])+)\)/g },
 
@@ -65,7 +67,7 @@ async function walk(dir) {
       out.push(...await walk(full));
     } else if (ent.isFile()) {
       // L3 fix: also match .markdown extension (Obsidian / Logseq variants).
-      if (/\.(md|markdown|json|txt|env)$/i.test(ent.name) || ent.name === '.env') {
+      if (/\.(md|markdown|json|txt|env|ts|tsx|js|jsx|mjs|cjs|css|html)$/i.test(ent.name) || ent.name === '.env') {
         out.push(full);
       }
     }
@@ -118,7 +120,15 @@ export function scanText(text, file = '<inline>') {
   const lines = text.split('\n');
   const offsets = buildLineIndex(text);
 
-  for (const [name, { regex, severity }] of Object.entries(RULES)) {
+  const normalizedFile = file.replace(/\\/g, '/');
+  const publicCodeFile = file === '<inline>'
+    || /\.(?:ts|tsx|js|jsx|mjs|cjs|css|html)$/i.test(normalizedFile)
+    || normalizedFile.includes('/public/demo/')
+    || normalizedFile.includes('/dist/');
+
+  for (const [name, { regex, severity, scope }] of Object.entries(RULES)) {
+    if (scope === 'public-code' && !publicCodeFile) continue;
+    if (name === 'hk-phone' && normalizedFile.includes('/dist/')) continue;
     regex.lastIndex = 0;
     let m;
     while ((m = regex.exec(text)) !== null) {
@@ -159,7 +169,7 @@ async function main() {
   }
 
   if (allFindings.length === 0) {
-    console.log('✅ 0 hit — vault + JSON 全部 clean\n');
+    console.log('✅ 0 hit — configured public inputs, source, build assets, and vaults are clean\n');
     process.exit(0);
   }
 

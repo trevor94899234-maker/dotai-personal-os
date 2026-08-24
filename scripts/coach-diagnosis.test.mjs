@@ -33,7 +33,7 @@ function artifact(overrides = {}) {
     uploadedAt: "2026-08-21T00:00:00.000Z",
     ...FRESH_PERIOD,
     targetType: "listing",
-    targetId: "4517034664",
+    targetId: "demo-listing-a",
     ownerConfirmed: true,
     ocrStatus: "not-needed",
     rows: 1,
@@ -64,7 +64,7 @@ function addComparableLanes(state, options = {}) {
 }
 
 function diagnosisInput(overrides = {}) {
-  return { activeDesignId: "design-md1405-04-journal", selectedListingId: "4517034664", ...FRESH_PERIOD, asOf: AS_OF, ...overrides };
+  return { activeDesignId: "demo-design-journal", selectedListingId: "demo-listing-a", ...FRESH_PERIOD, asOf: AS_OF, ...overrides };
 }
 
 test("Buyer and occasion are the first gate and block downstream keyword, listing, or image advice", async () => {
@@ -100,11 +100,11 @@ test("New product or niche diagnosis requires an owner-confirmed target-matched 
 test("New-product market states keep invalid, missing, explicitly stale, OCR-only, and unconfirmed distinct", async () => {
   const { DEFAULT_STATE, buildCoachDiagnosis } = await core();
   const cases = [
-    { label: "invalid", artifact: artifact({ id: "market-invalid", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "design-md1405-04-journal", metrics: [{ label: "Views", value: null, status: "invalid" }] }), broken: "Market evidence invalid", inventory: "invalid" },
-    { label: "missing", artifact: artifact({ id: "market-missing", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "design-md1405-04-journal", metrics: [{ label: "Views", value: null, status: "missing" }] }), broken: "Market evidence value missing", inventory: "missing" },
-    { label: "stale", artifact: artifact({ id: "market-stale", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "design-md1405-04-journal", ...OLD_PERIOD }), broken: "Market signal stale", inventory: "stale", input: { staleAfterDays: 30 } },
-    { label: "ocr", artifact: artifact({ id: "market-ocr", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "design-md1405-04-journal", mimeType: "image/png", ocrStatus: "unreadable" }), broken: "Market OCR review incomplete", inventory: "ocrReviewOnly" },
-    { label: "unconfirmed", artifact: artifact({ id: "market-unconfirmed", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "design-md1405-04-journal", ownerConfirmed: false }), broken: "Market evidence unconfirmed", inventory: "unconfirmed" },
+    { label: "invalid", artifact: artifact({ id: "market-invalid", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "demo-design-journal", metrics: [{ label: "Views", value: null, status: "invalid" }] }), broken: "Market evidence invalid", inventory: "invalid" },
+    { label: "missing", artifact: artifact({ id: "market-missing", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "demo-design-journal", metrics: [{ label: "Views", value: null, status: "missing" }] }), broken: "Market evidence value missing", inventory: "missing" },
+    { label: "stale", artifact: artifact({ id: "market-stale", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "demo-design-journal", ...OLD_PERIOD }), broken: "Market signal stale", inventory: "stale", input: { staleAfterDays: 30 } },
+    { label: "ocr", artifact: artifact({ id: "market-ocr", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "demo-design-journal", mimeType: "image/png", ocrStatus: "unreadable" }), broken: "Market OCR review incomplete", inventory: "ocrReviewOnly" },
+    { label: "unconfirmed", artifact: artifact({ id: "market-unconfirmed", kind: "keyword-research", source: "erank", authority: "supplemental", targetType: "design", targetId: "demo-design-journal", ownerConfirmed: false }), broken: "Market evidence unconfirmed", inventory: "unconfirmed" },
   ];
   for (const scenario of cases) {
     const state = structuredClone(DEFAULT_STATE);

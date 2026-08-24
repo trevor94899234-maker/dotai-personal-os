@@ -141,7 +141,7 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
       const next =
         live?.version === 2 && live.evidenceInbox && live.trustLedger
           ? live
-          : await fetchJson<EtsyDecision | null>("demo/etsy-decision-sample.json", null);
+          : await fetchJson<EtsyDecision | null>(import.meta.env.PROD ? "etsy-decision-sample.json" : "demo/etsy-decision-sample.json", null);
       setDecision(next);
       setAgents(roster);
       if (next) {

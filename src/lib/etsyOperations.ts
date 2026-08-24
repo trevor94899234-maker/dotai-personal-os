@@ -761,20 +761,20 @@ const STORE_NAME = "state";
 const STATE_KEY = "main";
 
 const KNOWN_PRODUCT_CARDS: Product[] = [
-  { id: "product-standard-journal", name: "Standard Printed Vegan Leather Journal", type: "Journal", material: "Vegan leather cover; brown elastic closure band; ribbon bookmark", size: "5.8 in × 8.5 in × 5/8 in; 100 sheets / 200 lined pages; 11.33 oz", productionMethod: "Printed cover design only; no engraving or embossing", fulfilmentSource: "Produced and shipped from the US; average production time: 5 business days", costSource: "Empire Builder working source (owner-confirmed 2026-07-31): USD 13.50 base; US USD 6.31; Canada USD 9.70; EU USD 9.22. Rest of World and additional item shipping remain open.", allowedClaims: "personalized, custom name, vegan leather journal, printed cover design, 200 lined pages", blockedClaims: "engraved, embossed, debossed, guided prompts, prompt journal, blank pages", sourceNote: "Owner-provided journal product screenshots and product rules (2026-06-29); Empire Builder cost authority (2026-07-31)." },
-  { id: "product-acrylic-led-plaque", name: "Printed Acrylic LED Plaque", type: "Acrylic LED Plaque", material: "Premium acrylic with wooden LED base", size: "Chapter 60 example: 7 in / 17.8 cm high × 5.9 in / 149.86 mm wide; acrylic depth 0.1 in / 5 mm. Confirm by SKU before listing.", productionMethod: "Sharp, detailed printed design only; not engraved unless an exact SKU proves otherwise", fulfilmentSource: "Empire Builder Graphic Acrylic Square Plaque LED base; confirm final size and base details per SKU", costSource: "Empire Builder working source (owner-confirmed 2026-07-31): USD 12.00 for corded or battery LED base; US USD 6.31; Canada USD 9.70; EU USD 9.22. Rest of World and additional item shipping remain open.", allowedClaims: "personalized acrylic plaque, printed design, LED base, USB or battery option when the selected SKU provides it", blockedClaims: "engraved without SKU proof, unclear LED color claims, treating acrylic thickness as full product depth", sourceNote: "Owner-provided plaque sizing image and product documentation (2026-06-29); Empire Builder cost authority (2026-07-31)." },
+  { id: "product-standard-journal", name: "Sample Printed Journal", type: "Journal", material: "Public demo placeholder — import owner-confirmed material details locally", size: "Public demo placeholder — confirm the exact variant before drafting", productionMethod: "Public demo placeholder — do not make production claims without local evidence", fulfilmentSource: "Private owner data required", costSource: "Private owner data required", allowedClaims: "sample personalized journal", blockedClaims: "engraved, embossed, debossed, unverified material, size, production, shipping, or price claims", sourceNote: "Public demo only. Import owner-confirmed product facts and cost evidence locally." },
+  { id: "product-acrylic-led-plaque", name: "Sample Acrylic Display", type: "Acrylic Display", material: "Public demo placeholder — import owner-confirmed material details locally", size: "Public demo placeholder — confirm the exact variant before drafting", productionMethod: "Public demo placeholder — do not make production claims without local evidence", fulfilmentSource: "Private owner data required", costSource: "Private owner data required", allowedClaims: "sample personalized display", blockedClaims: "unverified material, size, production, shipping, lighting, or price claims", sourceNote: "Public demo only. Import owner-confirmed product facts and cost evidence locally." },
 ];
 
 const KNOWN_DESIGNS: Design[] = [
   {
-    id: "design-md1405-04-journal",
-    name: "MD-1405 Design 04 — Mom Tell Me Your Story (Journal)",
+    id: "demo-design-journal",
+    name: "Sample Family Journal Design",
     productId: "product-standard-journal",
-    recipient: "Mom",
-    occasion: "Family legacy / memory gift",
+    recipient: "Family member",
+    occasion: "Sample keepsake occasion",
     mockupStatus: "ready",
-    assetName: "Design 04 / IMG_8184-Zoom.jpg",
-    sourceNote: "Verified local preview: C:\\Users\\ctcc0\\Downloads\\Acrylic Plaque LED (Square) Design For Trevor Cheuk-20260707T154054Z-3-001\\MD-1405  Graphic Journal - Acrylic Plaque LED (Square) Design For Trevor Cheuk\\Design 04\\IMG_8184-Zoom.jpg",
+    assetName: "sample-journal-preview.jpg",
+    sourceNote: "Public demo only. Import the private owner design record and source evidence locally.",
   },
 ];
 
@@ -785,8 +785,8 @@ export const DEFAULT_STATE: EtsyOperationsState = {
   products: KNOWN_PRODUCT_CARDS,
   designs: KNOWN_DESIGNS,
   listings: [
-    { id: "4517034664", title: "Mom and Dad 2-Book Set", protected: true },
-    { id: "4524703935", title: "Parents duplicate listing", protected: true },
+    { id: "demo-listing-a", title: "Sample active listing", protected: true },
+    { id: "demo-listing-b", title: "Sample protected comparison", protected: true },
   ],
   posts: [],
   gates: [],
@@ -822,13 +822,11 @@ export function keywordEvidenceGaps(state: EtsyOperationsState, designId: string
 }
 
 export function hydrateKnownProducts(state: EtsyOperationsState): EtsyOperationsState {
-  const missing = KNOWN_PRODUCT_CARDS.filter((card) => !state.products.some((product) => product.id === card.id));
-  return missing.length ? { ...state, products: [...state.products, ...missing] } : state;
+  return state.products.length === 0 ? { ...state, products: [...KNOWN_PRODUCT_CARDS] } : state;
 }
 
 export function hydrateKnownDesigns(state: EtsyOperationsState): EtsyOperationsState {
-  const missing = KNOWN_DESIGNS.filter((card) => !state.designs.some((design) => design.id === card.id));
-  return missing.length ? { ...state, designs: [...state.designs, ...missing] } : state;
+  return state.designs.length === 0 ? { ...state, designs: [...KNOWN_DESIGNS] } : state;
 }
 
 function openDb(): Promise<IDBDatabase> {
