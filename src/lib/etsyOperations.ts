@@ -27,6 +27,295 @@ export type EvidenceArtifact = {
   sourceUrl?: string;
 };
 
+export type ParsedEvidenceFile = Pick<EvidenceArtifact, "rows" | "headers" | "metrics" | "contentText">;
+export type EvidenceClassificationField = "kind" | "source" | "target" | "periodStart" | "periodEnd";
+export type EvidenceClassificationTarget = {
+  targetType: EvidenceArtifact["targetType"];
+  targetId: string;
+  labels: string[];
+};
+export type EvidenceFileClassification = {
+  kind?: EvidenceKind;
+  source?: EvidenceSource;
+  targetType?: EvidenceArtifact["targetType"];
+  targetId?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  status: "classified" | "ambiguous";
+  ambiguity: EvidenceClassificationField[];
+  signals: string[];
+};
+export type EvidenceClassificationInput = EvidenceBatchFileLike & {
+  headers?: string[];
+  contentText?: string;
+  targets?: EvidenceClassificationTarget[];
+};
+
+export const MAX_EVIDENCE_BATCH_FILES = 100;
+export type EvidenceBatchStatus = "queued" | "processing" | "saved" | "error";
+export type EvidenceBatchFileLike = { name: string; type?: string };
+export type EvidenceBatchItem = {
+  index: number;
+  fileName: string;
+  mimeType: string;
+  status: EvidenceBatchStatus;
+  detail: string;
+};
+export type EvidenceBatchResult<TFile, TResult> = {
+  items: EvidenceBatchItem[];
+  successes: Array<{ index: number; file: TFile; value: TResult }>;
+  failures: Array<{ index: number; file: TFile; error: string }>;
+};
+
+export function isSupportedEvidenceFile(file: EvidenceBatchFileLike) {
+  const name = file.name.toLowerCase();
+  const type = file.type?.toLowerCase() ?? "";
+  return type.startsWith("image/")
+    || /\.(png|jpe?g|csv|tsv|xlsx?|xls)$/i.test(name)
+    || ["text/csv", "text/tab-separated-values", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"].includes(type);
+}
+
+export function createEvidenceBatchItems(files: EvidenceBatchFileLike[]): EvidenceBatchItem[] {
+  return files.map((file, index) => ({
+    index,
+    fileName: file.name,
+    mimeType: file.type || "application/octet-stream",
+    status: "queued",
+    detail: "Waiting to be processed.",
+  }));
+}
+
+export async function processEvidenceBatch<TFile extends EvidenceBatchFileLike, TResult>(
+  files: TFile[],
+  processor: (file: TFile, index: number) => Promise<TResult>,
+  onProgress?: (items: EvidenceBatchItem[]) => void,
+): Promise<EvidenceBatchResult<TFile, TResult>> {
+  if (files.length > MAX_EVIDENCE_BATCH_FILES) throw new Error(`Select no more than ${MAX_EVIDENCE_BATCH_FILES} files in one batch.`);
+  const items = createEvidenceBatchItems(files);
+  const successes: EvidenceBatchResult<TFile, TResult>["successes"] = [];
+  const failures: EvidenceBatchResult<TFile, TResult>["failures"] = [];
+  const publish = () => onProgress?.(items.map((item) => ({ ...item })));
+  publish();
+  for (const [index, file] of files.entries()) {
+    items[index] = { ...items[index], status: "processing", detail: `Processing ${index + 1} of ${files.length}.` };
+    publish();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      if (!isSupportedEvidenceFile(file)) throw new Error("Unsupported file type. Use PNG, JPG, CSV, TSV, XLS or XLSX.");
+      const value = await processor(file, index);
+      successes.push({ index, file, value });
+      items[index] = { ...items[index], status: "saved", detail: "Saved as a separate local evidence record." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "This file could not be processed.";
+      failures.push({ index, file, error: message });
+      items[index] = { ...items[index], status: "error", detail: message };
+    }
+    publish();
+  }
+  return { items, successes, failures };
+}
+
+function normalizeClassificationText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[_/\\.-]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueClassificationCandidate<T extends string>(candidates: T[]) {
+  const unique = Array.from(new Set(candidates));
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
+function normalizeIsoDate(value: string) {
+  const match = value.match(/(20\d{2})[-_.](\d{2})[-_.](\d{2})/);
+  if (!match) return undefined;
+  const normalized = `${match[1]}-${match[2]}-${match[3]}`;
+  return Number.isFinite(Date.parse(`${normalized}T00:00:00Z`)) ? normalized : undefined;
+}
+
+/**
+ * Classify one supplied file without borrowing metadata from the rest of its
+ * selection. Only explicit filename/header/content signals are accepted; every
+ * unresolved or conflicting field remains visible for owner review.
+ */
+export function classifyEvidenceFile(input: EvidenceClassificationInput): EvidenceFileClassification {
+  const fileText = normalizeClassificationText(input.name);
+  const headerText = normalizeClassificationText((input.headers ?? []).join(" "));
+  const contentText = normalizeClassificationText((input.contentText ?? "").slice(0, 25000));
+  const corpus = [fileText, headerText, contentText].filter(Boolean).join(" ");
+  const signals = [`File: ${input.name}`, `Type: ${input.type || "unknown"}`];
+
+  const sourceRules: Array<[EvidenceSource, RegExp, string]> = [
+    ["erank", /\be\s?rank\b/, "eRank named in file or content"],
+    ["everbee", /\bever\s?bee\b/, "EverBee named in file or content"],
+    ["instagram", /\binstagram\b/, "Instagram named in file or content"],
+    ["pinterest", /\bpinterest\b/, "Pinterest named in file or content"],
+    ["facebook", /\bfacebook\b|\bmeta insights?\b/, "Facebook or Meta Insights named in file or content"],
+    ["threads", /\bthreads insights?\b/, "Threads Insights named in file or content"],
+    ["owner", /\bowner provided\b|\bowner evidence\b/, "Owner-provided evidence named in file or content"],
+    ["etsy", /\betsy\b|\bshop stats\b/, "Etsy or Shop Stats named in file or content"],
+  ];
+  const detectSources = (text: string, scope: string) => sourceRules.flatMap(([source, pattern, signal]) => pattern.test(text) ? [{ source, signal: `${signal} (${scope})` }] : []);
+  const fileSources = detectSources(fileText, "filename");
+  const fallbackSources = fileSources.length ? [] : detectSources([headerText, contentText].filter(Boolean).join(" "), "headers/content");
+  const detectedSources = fileSources.length ? fileSources : fallbackSources;
+  const sourceCandidates = detectedSources.map((item) => item.source);
+  signals.push(...detectedSources.map((item) => item.signal));
+  const source = uniqueClassificationCandidate(sourceCandidates);
+
+  const detectKinds = (text: string, includeHeaderHeuristics: boolean, scope: string) => {
+    const found: Array<{ kind: EvidenceKind; signal: string }> = [];
+    const addKind = (kind: EvidenceKind, signal: string) => found.push({ kind, signal: `${signal} (${scope})` });
+    if (/\bshop stats\b|\bstats overview\b|\bshop performance overview\b/.test(text)) addKind("shop-stats", "Shop Stats overview signal found");
+    if (/\blisting performance\b|\blisting stats\b/.test(text)) addKind("listing-performance", "Listing performance signal found");
+    if (/\btraffic sources?\b|\betsy search\b|\bsearch terms?\b/.test(text)) addKind("traffic-sources", "Traffic source or Etsy Search signal found");
+    if (/\bkeyword research\b/.test(text) || (includeHeaderHeuristics && /\bkeyword\b/.test(headerText) && /\b(search|searches|volume|competition)\b/.test(headerText))) addKind("keyword-research", "Keyword research headers or label found");
+    if (/\bproduct facts?\b|\bproduct specifications?\b/.test(text) || (includeHeaderHeuristics && /\bmaterial\b/.test(headerText) && /\b(size|dimensions|production method)\b/.test(headerText))) addKind("product-facts", "Product specification signal found");
+    if (/\bcost (and )?fulfilment\b|\bcost (and )?fulfillment\b|\bsupplier cost\b|\bshipping cost\b/.test(text)) addKind("cost-fulfilment", "Cost or fulfilment signal found");
+    if (/\bdesign mockup\b|\bmockup proof\b|\bdesign proof\b/.test(text)) addKind("design", "Design or mockup signal found");
+    if (/\bsocial results?\b|\bsocial analytics\b/.test(text) || (includeHeaderHeuristics && ["instagram", "pinterest", "facebook", "threads"].includes(source ?? "") && /\b(clicks?|impressions?|reach|saves?|engagement)\b/.test(headerText))) addKind("social-results", "Social analytics signal found");
+    if (!found.length && includeHeaderHeuristics && /\blisting id\b/.test(headerText) && /\bviews?\b/.test(headerText) && /\b(orders?|favorites?)\b/.test(headerText)) addKind("listing-performance", "Listing ID with performance metric headers found");
+    return found;
+  };
+  const fileKinds = detectKinds(fileText, false, "filename");
+  const fallbackKinds = fileKinds.length ? [] : detectKinds([headerText, contentText].filter(Boolean).join(" "), true, "headers/content");
+  const detectedKinds = fileKinds.length ? fileKinds : fallbackKinds;
+  const kindCandidates = detectedKinds.map((item) => item.kind);
+  signals.push(...detectedKinds.map((item) => item.signal));
+  const kind = uniqueClassificationCandidate(kindCandidates);
+
+  const matchedTargets = (input.targets ?? []).filter((target) => {
+    const labels = [target.targetId, ...target.labels]
+      .map(normalizeClassificationText)
+      .filter((label) => label.length >= 4);
+    return labels.some((label) => corpus.includes(label));
+  });
+  if (!matchedTargets.length && kind === "shop-stats") {
+    matchedTargets.push({ targetType: "shop", targetId: "shop", labels: ["Entire shop"] });
+    signals.push("Shop Stats deterministically targets the entire shop");
+  }
+  const uniqueTargets = Array.from(new Map(matchedTargets.map((target) => [`${target.targetType}:${target.targetId}`, target])).values());
+  const target = uniqueTargets.length === 1 ? uniqueTargets[0] : undefined;
+  if (target) signals.push(`Target matched: ${target.targetType} ${target.targetId}`);
+
+  const normalizedFileDates = Array.from(new Set((input.name.match(/20\d{2}[-_.]\d{2}[-_.]\d{2}/g) ?? []).map(normalizeIsoDate).filter((date): date is string => Boolean(date))));
+  const rawContent = input.contentText ?? "";
+  const labeledStart = normalizeIsoDate(rawContent.match(/(?:coverage\s+)?start(?:\s+date)?\s*[:=,]\s*(20\d{2}[-_.]\d{2}[-_.]\d{2})/i)?.[1] ?? "");
+  const labeledEnd = normalizeIsoDate(rawContent.match(/(?:coverage\s+)?end(?:\s+date)?\s*[:=,]\s*(20\d{2}[-_.]\d{2}[-_.]\d{2})/i)?.[1] ?? "");
+  const periodStarts: string[] = [];
+  const periodEnds: string[] = [];
+  if (normalizedFileDates.length === 1) {
+    periodStarts.push(normalizedFileDates[0]);
+    periodEnds.push(normalizedFileDates[0]);
+    signals.push(`Single-date coverage found in filename: ${normalizedFileDates[0]}`);
+  } else if (normalizedFileDates.length === 2) {
+    const [start, end] = [...normalizedFileDates].sort();
+    periodStarts.push(start);
+    periodEnds.push(end);
+    signals.push(`Date range found in filename: ${start} to ${end}`);
+  } else if (normalizedFileDates.length > 2) {
+    signals.push("More than two filename dates found; period needs owner review");
+  }
+  if (labeledStart) {
+    periodStarts.push(labeledStart);
+    signals.push(`Labeled start date found: ${labeledStart}`);
+  }
+  if (labeledEnd) {
+    periodEnds.push(labeledEnd);
+    signals.push(`Labeled end date found: ${labeledEnd}`);
+  }
+  const periodStart = uniqueClassificationCandidate(periodStarts);
+  const periodEnd = uniqueClassificationCandidate(periodEnds);
+
+  const ambiguity: EvidenceClassificationField[] = [];
+  if (!kind) ambiguity.push("kind");
+  if (!source) ambiguity.push("source");
+  if (!target) ambiguity.push("target");
+  if (!periodStart) ambiguity.push("periodStart");
+  if (!periodEnd) ambiguity.push("periodEnd");
+  return {
+    kind,
+    source,
+    targetType: target?.targetType,
+    targetId: target?.targetId,
+    periodStart,
+    periodEnd,
+    status: ambiguity.length ? "ambiguous" : "classified",
+    ambiguity,
+    signals,
+  };
+}
+
+export function isEvidenceFileClassificationReady(classification: EvidenceFileClassification) {
+  return classification.status === "classified"
+    && Boolean(classification.kind && classification.source && classification.targetType && classification.targetId && classification.periodStart && classification.periodEnd)
+    && classification.periodStart! <= classification.periodEnd!;
+}
+
+export type EvidenceGroupMetricValue = { value: number | null; status: MetricStatus; artifactIds: string[] };
+export type EvidenceGroupMetric = {
+  canonicalLabel: string;
+  displayLabel: string;
+  value: number | null;
+  status: MetricStatus | "conflict";
+  artifactIds: string[];
+  duplicateArtifactIds: string[];
+  variants: EvidenceGroupMetricValue[];
+};
+export type EvidenceGroup = {
+  key: string;
+  source: EvidenceSource;
+  kind: EvidenceKind;
+  targetType: EvidenceArtifact["targetType"];
+  targetId: string;
+  periodStart: string;
+  periodEnd: string;
+  artifactIds: string[];
+  confirmedArtifactIds: string[];
+  eligibleArtifactIds: string[];
+  unconfirmedArtifactIds: string[];
+  ocrReviewOnlyArtifactIds: string[];
+  metrics: EvidenceGroupMetric[];
+  conflicts: string[];
+  duplicateArtifactIds: string[];
+  stale: boolean;
+  ageDays: number | null;
+};
+
+export type CoachEvidenceInventory = {
+  known: string[];
+  dated: string[];
+  missing: string[];
+  invalid: string[];
+  zero: string[];
+  stale: string[];
+  conflicting: string[];
+  unconfirmed: string[];
+  ocrReviewOnly: string[];
+  duplicates: string[];
+  protected: string[];
+};
+export type CoachDiagnosis = {
+  mode: "existing-listing" | "new-product-niche";
+  stage: string;
+  firstBrokenLink: string;
+  verdict: string;
+  evidence: CoachEvidenceInventory;
+  nextAction: { label: string; detail: string; tab: OperationsTab };
+  reviewSignal: string;
+};
+export type CoachDiagnosisInput = {
+  activeDesignId?: string;
+  selectedListingId?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  asOf?: string;
+  staleAfterDays?: number;
+};
+
 export function shouldRunOcrBeforeConfirm(artifact: EvidenceArtifact) {
   return artifact.mimeType.startsWith("image/")
     && artifact.ocrStatus === "pending"
@@ -85,7 +374,7 @@ export type SellerDecision = {
   protectedNote?: string;
 };
 export type EvidenceIntakeKind = "shop-stats" | "listing-performance" | "traffic-sources";
-export type EvidenceIntakeStepStatus = "missing" | "review" | "confirmed" | "not-eligible";
+export type EvidenceIntakeStepStatus = "missing" | "review" | "confirmed" | "not-eligible" | "conflict";
 export type EvidenceIntakeStep = {
   kind: EvidenceIntakeKind;
   label: string;
@@ -628,20 +917,430 @@ export function isEvidenceEligibleForDecision(artifact: EvidenceArtifact) {
   return !artifact.metrics.some((metric) => metric.status === "missing" || metric.status === "invalid");
 }
 
+const CANONICAL_METRIC_ALIASES: Record<string, string> = {
+  view: "views",
+  views: "views",
+  "listing view": "views",
+  "listing views": "views",
+  visit: "visits",
+  visits: "visits",
+  favorite: "favorites",
+  favorites: "favorites",
+  favourite: "favorites",
+  favourites: "favorites",
+  "item favorite": "favorites",
+  "item favorites": "favorites",
+  order: "orders",
+  orders: "orders",
+  revenue: "revenue",
+  sales: "revenue",
+  "etsy revenue": "revenue",
+  click: "clicks",
+  clicks: "clicks",
+  impression: "impressions",
+  impressions: "impressions",
+  save: "saves",
+  saves: "saves",
+  reach: "reach",
+  engagement: "engagement",
+  "conversion rate": "conversion-rate",
+};
+
+const CANONICAL_METRIC_LABELS: Record<string, string> = {
+  views: "Views",
+  visits: "Visits",
+  favorites: "Favorites",
+  orders: "Orders",
+  revenue: "Revenue",
+  clicks: "Clicks",
+  impressions: "Impressions",
+  saves: "Saves",
+  reach: "Reach",
+  engagement: "Engagement",
+  "conversion-rate": "Conversion rate",
+};
+
+export function canonicalMetricLabel(label: string) {
+  const normalized = label
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9% ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return CANONICAL_METRIC_ALIASES[normalized] ?? normalized.replace(/\s+/g, "-");
+}
+
+export function evidenceAgeDays(periodEnd: string, asOf: string) {
+  const end = Date.parse(`${periodEnd}T00:00:00Z`);
+  const now = Date.parse(`${asOf}T00:00:00Z`);
+  if (!Number.isFinite(end) || !Number.isFinite(now) || end > now) return null;
+  return Math.floor((now - end) / 86_400_000);
+}
+
+export function isEvidencePeriodStale(periodEnd: string, asOf: string, staleAfterDays?: number) {
+  if (staleAfterDays === undefined || !Number.isFinite(staleAfterDays) || staleAfterDays < 0) return false;
+  const ageDays = evidenceAgeDays(periodEnd, asOf);
+  return ageDays !== null && ageDays > staleAfterDays;
+}
+
+export function deriveEvidenceGroups(
+  artifacts: EvidenceArtifact[],
+  options: { asOf?: string; staleAfterDays?: number } = {},
+): EvidenceGroup[] {
+  const asOf = options.asOf ?? new Date().toISOString().slice(0, 10);
+  const buckets = new Map<string, EvidenceArtifact[]>();
+  for (const artifact of artifacts) {
+    const key = JSON.stringify([artifact.source, artifact.kind, artifact.targetType, artifact.targetId, artifact.periodStart, artifact.periodEnd]);
+    buckets.set(key, [...(buckets.get(key) ?? []), artifact]);
+  }
+  return Array.from(buckets.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, groupedArtifacts]) => {
+      const first = groupedArtifacts[0];
+      const confirmedArtifacts = groupedArtifacts.filter((artifact) => artifact.ownerConfirmed);
+      const readableArtifacts = confirmedArtifacts.filter((artifact) => !artifact.mimeType.startsWith("image/") || (artifact.ocrStatus === "confirmed" && Boolean(artifact.contentText?.trim())));
+      const metricBuckets = new Map<string, Array<{ artifactId: string; metric: Metric }>>();
+      for (const artifact of readableArtifacts) {
+        for (const metric of artifact.metrics) {
+          const canonical = canonicalMetricLabel(metric.label);
+          metricBuckets.set(canonical, [...(metricBuckets.get(canonical) ?? []), { artifactId: artifact.id, metric }]);
+        }
+      }
+      const metrics = Array.from(metricBuckets.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([canonicalLabel, entries]): EvidenceGroupMetric => {
+          const variantBuckets = new Map<string, Array<{ artifactId: string; metric: Metric }>>();
+          for (const entry of entries) {
+            const variantKey = JSON.stringify([entry.metric.status, entry.metric.value]);
+            variantBuckets.set(variantKey, [...(variantBuckets.get(variantKey) ?? []), entry]);
+          }
+          const variants = Array.from(variantBuckets.values()).map((variantEntries) => ({
+            value: variantEntries[0].metric.value,
+            status: variantEntries[0].metric.status,
+            artifactIds: Array.from(new Set(variantEntries.map((entry) => entry.artifactId))),
+          }));
+          const duplicateArtifactIds = Array.from(new Set(variants.flatMap((variant) => variant.artifactIds.slice(1))));
+          const conflict = variants.length > 1;
+          return {
+            canonicalLabel,
+            displayLabel: CANONICAL_METRIC_LABELS[canonicalLabel] ?? entries[0].metric.label.trim(),
+            value: conflict ? null : variants[0].value,
+            status: conflict ? "conflict" : variants[0].status,
+            artifactIds: Array.from(new Set(entries.map((entry) => entry.artifactId))),
+            duplicateArtifactIds,
+            variants,
+          };
+        });
+      return {
+        key,
+        source: first.source,
+        kind: first.kind,
+        targetType: first.targetType,
+        targetId: first.targetId,
+        periodStart: first.periodStart,
+        periodEnd: first.periodEnd,
+        artifactIds: groupedArtifacts.map((artifact) => artifact.id),
+        confirmedArtifactIds: confirmedArtifacts.map((artifact) => artifact.id),
+        eligibleArtifactIds: confirmedArtifacts.filter(isEvidenceEligibleForDecision).map((artifact) => artifact.id),
+        unconfirmedArtifactIds: groupedArtifacts.filter((artifact) => !artifact.ownerConfirmed).map((artifact) => artifact.id),
+        ocrReviewOnlyArtifactIds: confirmedArtifacts.filter((artifact) => artifact.mimeType.startsWith("image/") && (artifact.ocrStatus !== "confirmed" || !artifact.contentText?.trim())).map((artifact) => artifact.id),
+        metrics,
+        conflicts: metrics.filter((metric) => metric.status === "conflict").map((metric) => metric.canonicalLabel),
+        duplicateArtifactIds: Array.from(new Set(metrics.flatMap((metric) => metric.duplicateArtifactIds))),
+        stale: isEvidencePeriodStale(first.periodEnd, asOf, options.staleAfterDays),
+        ageDays: evidenceAgeDays(first.periodEnd, asOf),
+      };
+    });
+}
+
+function emptyCoachInventory(): CoachEvidenceInventory {
+  return { known: [], dated: [], missing: [], invalid: [], zero: [], stale: [], conflicting: [], unconfirmed: [], ocrReviewOnly: [], duplicates: [], protected: [] };
+}
+
+function addUnique(items: string[], value: string) {
+  if (!items.includes(value)) items.push(value);
+}
+
+function evidenceGroupLabel(group: EvidenceGroup) {
+  const target = group.targetType === "shop" ? "shop" : `${group.targetType} ${group.targetId}`;
+  return `${group.kind} · ${target} · ${group.periodStart || "no start"} → ${group.periodEnd || "no end"}`;
+}
+
+function populateCoachInventory(inventory: CoachEvidenceInventory, groups: EvidenceGroup[], artifacts: EvidenceArtifact[]) {
+  const artifactsById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  for (const group of groups) {
+    const label = evidenceGroupLabel(group);
+    if (group.eligibleArtifactIds.length) addUnique(inventory.known, `${label} · owner-confirmed`);
+    addUnique(inventory.dated, `${label} · ${group.ageDays === null ? "age unavailable" : `${group.ageDays} day${group.ageDays === 1 ? "" : "s"} since period end`}`);
+    if (group.stale) addUnique(inventory.stale, label);
+    for (const artifactId of group.unconfirmedArtifactIds) addUnique(inventory.unconfirmed, artifactsById.get(artifactId)?.fileName ?? artifactId);
+    for (const artifactId of group.ocrReviewOnlyArtifactIds) addUnique(inventory.ocrReviewOnly, artifactsById.get(artifactId)?.fileName ?? artifactId);
+    for (const metric of group.metrics) {
+      const metricLabel = `${label} · ${metric.displayLabel}`;
+      if (metric.status === "conflict") addUnique(inventory.conflicting, metricLabel);
+      else if (metric.status === "invalid") addUnique(inventory.invalid, metricLabel);
+      else if (metric.status === "missing") addUnique(inventory.missing, metricLabel);
+      else {
+        addUnique(inventory.known, `${metricLabel} = ${metric.value}`);
+        if (metric.status === "confirmed-zero") addUnique(inventory.zero, metricLabel);
+      }
+      if (metric.duplicateArtifactIds.length) addUnique(inventory.duplicates, `${metricLabel} · ${metric.duplicateArtifactIds.length} exact duplicate file(s) ignored`);
+    }
+  }
+}
+
+function groupMetric(group: EvidenceGroup | undefined, canonicalLabel: string) {
+  return group?.metrics.find((metric) => metric.canonicalLabel === canonicalLabel);
+}
+
+export function buildCoachDiagnosis(state: EtsyOperationsState, input: CoachDiagnosisInput = {}): CoachDiagnosis {
+  const asOf = input.asOf ?? new Date().toISOString().slice(0, 10);
+  const selectedListing = state.listings.find((listing) => listing.id === input.selectedListingId);
+  const activeDesign = state.designs.find((design) => design.id === input.activeDesignId);
+  const activeProduct = state.products.find((product) => product.id === activeDesign?.productId);
+  const mode: CoachDiagnosis["mode"] = selectedListing ? "existing-listing" : "new-product-niche";
+  const allGroups = deriveEvidenceGroups(state.artifacts, { asOf, ...(input.staleAfterDays === undefined ? {} : { staleAfterDays: input.staleAfterDays }) });
+  const relevantGroups = mode === "existing-listing"
+    ? allGroups.filter((group) => group.source === "etsy" && ["shop-stats", "listing-performance", "traffic-sources"].includes(group.kind) && (!input.periodStart || group.periodStart === input.periodStart) && (!input.periodEnd || group.periodEnd === input.periodEnd) && (group.targetType === "shop" || group.targetId === selectedListing?.id))
+    : allGroups.filter((group) => Boolean(activeDesign) && (group.targetId === activeDesign?.id || group.targetId === activeDesign?.productId));
+  const evidence = emptyCoachInventory();
+  populateCoachInventory(evidence, relevantGroups, state.artifacts);
+  if (selectedListing?.protected) addUnique(evidence.protected, `${selectedListing.title} (${selectedListing.id}) · read-only`);
+
+  const diagnosis = (
+    stage: string,
+    firstBrokenLink: string,
+    verdict: string,
+    nextAction: CoachDiagnosis["nextAction"],
+    reviewSignal: string,
+  ): CoachDiagnosis => ({ mode, stage, firstBrokenLink, verdict, evidence, nextAction, reviewSignal });
+
+  if (!activeDesign || !activeDesign.recipient.trim() || !activeDesign.occasion.trim()) {
+    addUnique(evidence.missing, "Buyer, recipient and buying occasion");
+    return diagnosis(
+      activeDesign ? "Buyer / occasion" : "Choose working context",
+      "Buyer / occasion missing",
+      "先講清楚邊個買、送畀邊個同咩場合；未過呢關，唔應該跳去 keyword、listing 或圖片建議。",
+      { label: "Define buyer + occasion", detail: "Open the existing Product + Design Library and complete one buyer/occasion hypothesis.", tab: "library" },
+      "能用一句話講清楚誰買、送給誰、為甚麼場合。",
+    );
+  }
+  addUnique(evidence.known, `Buyer / occasion · ${activeDesign.recipient} · ${activeDesign.occasion}`);
+
+  if (mode === "existing-listing") {
+    if (!input.periodStart || !input.periodEnd || input.periodStart > input.periodEnd) {
+      addUnique(evidence.missing, "Comparable reporting period");
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "Comparable period missing",
+        "先鎖定同一個 listing 同 reporting period，再收三條 Etsy first-party evidence lane。",
+        { label: "Choose comparable evidence", detail: "Open the existing Research tab and choose the listing plus valid start/end dates.", tab: "research" },
+        "Listing、start date 同 end date 已鎖定，而且三份來源使用同一期間。",
+      );
+    }
+    const laneGroup = (kind: EvidenceIntakeKind) => relevantGroups
+      .filter((group) => group.kind === kind && (kind === "shop-stats" ? group.targetType === "shop" : kind === "listing-performance" ? group.targetType === "listing" && group.targetId === selectedListing?.id : group.targetId === selectedListing?.id || group.targetType === "shop"))
+      .sort((left, right) => Number(right.targetId === selectedListing?.id) - Number(left.targetId === selectedListing?.id))[0];
+    const lanes = EVIDENCE_INTAKE_REQUIREMENTS.map((requirement) => ({ requirement, group: laneGroup(requirement.kind) }));
+    for (const { requirement, group } of lanes) if (!group) addUnique(evidence.missing, `${requirement.label} · ${input.periodStart} → ${input.periodEnd}`);
+    const conflictGroup = relevantGroups.find((group) => group.conflicts.length);
+    if (conflictGroup) {
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "Conflicting first-party evidence",
+        "同一 evidence group 有互相衝突嘅值或 truth status；未經 owner 解決前，Coach diagnosis 必須停止。",
+        { label: "Resolve evidence conflict", detail: "Open the existing Research review and keep the conflicting files visible while the owner confirms the correct source.", tab: "research" },
+        "每個 canonical metric 只剩一個 owner-confirmed truth value；exact duplicate 只使用一次。",
+      );
+    }
+    const invalidGroup = lanes.find(({ group }) => group?.metrics.some((metric) => metric.status === "invalid"));
+    if (invalidGroup?.group) {
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "Invalid first-party value",
+        "Invalid 唔係零；先更正或換一份同期間 export，暫時唔作 traffic／conversion 判斷。",
+        { label: "Replace invalid evidence", detail: "Open the existing Research review and replace the invalid file without deleting valid files.", tab: "research" },
+        "三條 lane 沒有 invalid metric，confirmed zero 仍然保留為有效零值。",
+      );
+    }
+    const missingMetricGroup = lanes.find(({ group }) => group?.metrics.some((metric) => metric.status === "missing"));
+    if (missingMetricGroup?.group) {
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "First-party value missing",
+        "Missing 唔係零；先補返缺失欄位，唔應該用其他檔案相加估算。",
+        { label: "Complete missing evidence", detail: "Open the existing Research review and add a complete export for the same group.", tab: "research" },
+        "Required fields are present or explicitly confirmed zero in every comparable lane。",
+      );
+    }
+    const unavailableLane = lanes.find(({ group }) => !group?.eligibleArtifactIds.length);
+    if (unavailableLane) {
+      const hasOcrOnly = Boolean(unavailableLane.group?.ocrReviewOnlyArtifactIds.length);
+      const hasUnconfirmed = Boolean(unavailableLane.group?.unconfirmedArtifactIds.length);
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        hasOcrOnly ? "OCR review incomplete" : hasUnconfirmed ? "Owner confirmation missing" : "Comparable first-party evidence incomplete",
+        hasOcrOnly
+          ? "OCR-only／visual-only evidence 唔可以當 numeric truth；先完成 review 或提供 structured export。"
+          : hasUnconfirmed
+            ? "檔案已保存但未 owner-confirm；未確認 evidence 會保留可見，但排除於 diagnosis。"
+            : "三條同期間 Etsy first-party lane 未齊，暫時保持 Unknown / Collect data。",
+        { label: "Complete comparable evidence", detail: "Use the existing Evidence Intake Stepper; valid files stay saved even if another file failed.", tab: "research" },
+        "Shop Stats、Listing Performance、Traffic Sources 全部同期間、owner-confirmed 並 decision-ready。",
+      );
+    }
+    const staleGroup = lanes.find(({ group }) => group?.stale);
+    if (staleGroup?.group) {
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "Comparable evidence stale",
+        "呢個 first-party window 已超出目前本機 freshness review window；保留歷史值，但唔用作當前 Coach 結論。",
+        { label: "Refresh comparable evidence", detail: "Open the existing Research tab and add a current owner-approved comparison window.", tab: "research" },
+        "三條 lane 使用未過期、相同日期嘅 owner-confirmed evidence。",
+      );
+    }
+    const performance = laneGroup("listing-performance");
+    const views = groupMetric(performance, "views");
+    const favorites = groupMetric(performance, "favorites");
+    const orders = groupMetric(performance, "orders");
+    for (const [label, metric] of [["Views", views], ["Favorites", favorites], ["Orders", orders]] as const) if (!metric) addUnique(evidence.missing, `Listing Performance ${label}`);
+    if (!views || !favorites || !orders) {
+      return diagnosis(
+        "Traffic / conversion diagnosis",
+        "Required listing metrics missing",
+        "三條 evidence lane 已在，但 Listing Performance 未提供完整 Views、Favorites 同 Orders。",
+        { label: "Add complete listing metrics", detail: "Open the existing Research review and add a complete Listing Performance export.", tab: "research" },
+        "Views、Favorites、Orders 都有 confirmed 或 confirmed-zero truth state。",
+      );
+    }
+    const protectedPrefix = selectedListing?.protected ? "呢個 listing 保持 protected／read-only。" : "";
+    if (views.status === "confirmed-zero") {
+      return diagnosis(
+        "Traffic",
+        "Traffic signal is confirmed zero",
+        `${protectedPrefix} Views 係有效零值，代表目前未有足夠 discovery signal 去判 conversion；唔好先改圖片或價格。`,
+        { label: "Review traffic evidence", detail: "Open the existing read-only Analysis tab and inspect buyer intent, search terms and listing coherence.", tab: "analysis" },
+        "下一個 owner-approved period 有可比較 Search visits／Views；零值仍然保留為零。",
+      );
+    }
+    if ((views.value ?? 0) > 0 && favorites.status === "confirmed-zero" && orders.status === "confirmed-zero") {
+      return diagnosis(
+        "Offer clarity / image conversion",
+        "Intent signal not observed",
+        `${protectedPrefix} 買家已有見到 listing，但 Favorites 同 Orders 仍係 confirmed zero；只可 draft-review 一個 offer 或 first-image message 變數，唔聲稱因果。`,
+        { label: "Review one message variable", detail: "Open the existing read-only Analysis tab and choose one draft-only variable for owner review.", tab: "analysis" },
+        "同一 owner-approved period 比較 Views、Favorites、Orders；只判訊號變化，不宣稱單一原因。",
+      );
+    }
+    return diagnosis(
+      "Learning",
+      "No earlier evidence break found",
+      `${protectedPrefix} Comparable first-party evidence 已齊；保留現有 truth，喺 read-only analysis 揀一個可驗證問題。`,
+      { label: "Review the diagnosis", detail: "Open the existing Analysis tab; no Etsy change is performed here.", tab: "analysis" },
+      "Owner confirms one draft-only question and a comparable first-party signal for the next review。",
+    );
+  }
+
+  const marketGroups = relevantGroups.filter((group) => group.kind === "keyword-research" && ["etsy", "erank", "everbee"].includes(group.source));
+  const marketConflict = marketGroups.find((group) => group.conflicts.length);
+  if (marketConflict) {
+    return diagnosis(
+      "Demand evidence",
+      "Market signal conflicts",
+      "同一 market evidence group 出現衝突；先解決來源 truth，唔好開始設計或 listing copy。",
+      { label: "Resolve market evidence", detail: "Open the existing Research tab and review the conflicting files.", tab: "research" },
+      "每個 canonical metric 只剩一個 owner-confirmed truth value。",
+    );
+  }
+  const usableMarketGroup = marketGroups.find((group) => group.eligibleArtifactIds.length && !group.stale && !group.metrics.some((metric) => metric.status === "missing" || metric.status === "invalid"));
+  if (!usableMarketGroup) {
+    const staleMarket = marketGroups.find((group) => group.stale);
+    const invalidMarket = marketGroups.find((group) => group.metrics.some((metric) => metric.status === "invalid"));
+    const missingMarket = marketGroups.find((group) => group.metrics.some((metric) => metric.status === "missing"));
+    const ocrMarket = marketGroups.find((group) => group.ocrReviewOnlyArtifactIds.length);
+    const unconfirmedMarket = marketGroups.find((group) => group.unconfirmedArtifactIds.length);
+    addUnique(evidence.missing, "Owner-confirmed market / buyer signal for the selected target and period");
+    return diagnosis(
+      "Demand evidence",
+      staleMarket ? "Market signal stale" : invalidMarket ? "Market evidence invalid" : missingMarket ? "Market evidence value missing" : ocrMarket ? "Market OCR review incomplete" : unconfirmedMarket ? "Market evidence unconfirmed" : "Market / buyer signal missing",
+      staleMarket
+        ? "Market evidence 仍可作歷史 context，但已過 freshness window；先 refresh，唔好投入 production。"
+        : invalidMarket
+          ? "Invalid market value 唔係零；先更正來源，唔可以用錯誤數值支持新 product／niche。"
+          : missingMarket
+            ? "Market evidence 有缺失欄位；missing 唔係 confirmed zero，先補完整來源。"
+        : ocrMarket
+          ? "Market screenshot 未完成 OCR review；visual-only evidence 唔可以當 numeric demand truth。"
+          : unconfirmedMarket
+            ? "Market file 已保存但未 owner-confirm；未確認 evidence 會排除於 Coach 結論。"
+            : "Buyer/occasion 已清楚，但未有市場／買家訊號；先做最小 research，暫時唔好設計。",
+      { label: "Collect one market signal", detail: "Open the existing Research tab and add one dated Etsy/eRank/EverBee source for this design or product.", tab: "research" },
+      "有一份 owner-confirmed、target-matched market signal；如 owner 設定 freshness policy，亦要符合該明示規則。missing、invalid 同 OCR-only 仍分開。",
+    );
+  }
+  addUnique(evidence.known, `Market signal · ${evidenceGroupLabel(usableMarketGroup)}`);
+  const productGaps = activeProduct ? productFactGaps(state, activeProduct.id) : ["Linked product truth"];
+  if (productGaps.length || activeDesign.mockupStatus !== "ready") {
+    for (const gap of productGaps) addUnique(evidence.missing, gap);
+    if (activeDesign.mockupStatus !== "ready") addUnique(evidence.missing, "Product-specific mockup or exact product proof");
+    return diagnosis(
+      "Product / niche fit",
+      "Product / niche fit not evidenced",
+      "Market signal 已在，但產品 truth、gift fit 或 exact mockup 未齊；先補 product/niche fit，唔好跳到 SEO 文案。",
+      { label: "Complete product fit", detail: "Open the existing Product + Design Library and complete the missing product truth.", tab: "library" },
+      "Product facts、cost/fulfilment、design recipient/occasion 同 exact mockup 都有 owner-confirmed support。",
+    );
+  }
+  const loop = state.keywordResearchLoops.find((item) => item.designId === activeDesign.id);
+  if (loop?.stage !== "conclusion-ready" || !loop.primaryKeyword) {
+    return diagnosis(
+      "Product / niche fit",
+      "Market evidence not yet translated into a fit decision",
+      "證據已齊到可以比較，但未形成 product/niche fit conclusion；先完成分析，唔好直接起 listing。",
+      { label: "Review product / niche fit", detail: "Open the existing Analysis tab and complete the evidence-backed fit decision.", tab: "analysis" },
+      "有一個 evidence-backed primary direction、supporting context 同清楚 avoid terms。",
+    );
+  }
+  const draftState = deriveActiveDraftState(state.listingDrafts, activeDesign.id);
+  if (!draftState.currentDraft) {
+    return diagnosis(
+      "Listing meaning",
+      "Coherent listing message not drafted",
+      "Buyer、market 同 fit direction 已齊；下一步只係建立一份 local Listing Brief，保持 design、title、tags、attributes、description、offer 同 images 意思一致。",
+      { label: "Open Listing Brief", detail: "Use the existing Listing Brief workspace; nothing is published or sent to Etsy.", tab: "results" },
+      "一份 local draft 清楚表達同一 buyer、occasion、product promise 同 evidence-backed keyword direction。",
+    );
+  }
+  return diagnosis(
+    "Learning",
+    "Owner review is the next gate",
+    "Coach sequence 已去到 local draft；保留 owner gate，先 review truth 同一致性，唔自動發佈。",
+    { label: "Review local draft", detail: "Open the existing Listing Brief and use its current owner-controlled approval gate.", tab: "results" },
+    "Owner confirms the draft is coherent and chooses whether it is approved for later manual entry。",
+  );
+}
+
 export function buildEvidenceIntakeSteps(state: EtsyOperationsState, listingId: string, periodStart: string, periodEnd: string): EvidenceIntakeStep[] {
   return EVIDENCE_INTAKE_REQUIREMENTS.map((requirement) => {
     const matches = state.artifacts
       .filter((artifact) => artifact.kind === requirement.kind && artifact.source === "etsy" && artifact.periodStart === periodStart && artifact.periodEnd === periodEnd && matchesIntakeTarget(artifact, requirement.kind, listingId))
       .sort((a, b) => `${b.uploadedAt}${b.id}`.localeCompare(`${a.uploadedAt}${a.id}`));
+    const groups = deriveEvidenceGroups(matches);
+    const conflict = groups.some((group) => group.conflicts.length > 0);
     const selected = matches.find((artifact) => isEvidenceEligibleForDecision(artifact)) ?? matches.find((artifact) => artifact.ownerConfirmed) ?? matches[0];
     const status: EvidenceIntakeStepStatus = !selected
       ? "missing"
+      : conflict
+        ? "conflict"
       : isEvidenceEligibleForDecision(selected)
         ? "confirmed"
         : selected.ownerConfirmed
           ? "not-eligible"
           : "review";
-    const detail = status === "confirmed"
+    const detail = status === "conflict"
+      ? "Conflicting values or truth statuses exist in this exact source / kind / target / period group. Owner resolution is required before diagnosis."
+      : status === "confirmed"
       ? "Owner-confirmed and eligible for the read-only downstream packet."
       : status === "review"
         ? "Saved locally; open review and confirm only after checking the source, period, target and values."

@@ -1,20 +1,24 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { ArchiveRestore, CheckCircle2, Clipboard, FileDown, FileUp, Image, LibraryBig, Plus, ShieldCheck, Sparkles, Upload, Workflow, X } from "lucide-react";
 import KeywordResearchWorkspace from "./KeywordResearchWorkspace";
 import ProductFactsGate from "./ProductFactsGate";
-import EvidenceIntakeStepper, { type EvidenceUploadDraft } from "./EvidenceIntakeStepper";
+import EvidenceIntakeStepper, { type EvidenceUploadDraft, type EvidenceUploadFileDraft } from "./EvidenceIntakeStepper";
 import SellerDecisionCard from "./SellerDecisionCard";
 import DecisionControlSummary from "./DecisionControlSummary";
 import EtsyPresentationMode from "./EtsyPresentationMode";
+import CoachDiagnosisCard from "./CoachDiagnosisCard";
 import {
   DEFAULT_STATE,
+  MAX_EVIDENCE_BATCH_FILES,
   auditMissing,
+  buildCoachDiagnosis,
   buildPrimaryDashboardSummary,
   buildSellerDecision,
   buildWorkingContext,
   collectDraftPackageIssues,
   collectDraftTagIssues,
   collectListingDraftApprovalIssues,
+  classifyEvidenceFile,
   createId,
   deriveActiveDesignContent,
   deriveActiveDraftState,
@@ -27,6 +31,7 @@ import {
   listingBriefMissing,
   loadOperationsState,
   parseWorkbook,
+  processEvidenceBatch,
   productFactGaps,
   saveOperationsState,
   shouldRunOcrBeforeConfirm,
@@ -35,18 +40,22 @@ import {
   type ContentPost,
   type Design,
   type EvidenceArtifact,
+  type EvidenceBatchItem,
+  type EvidenceFileClassification,
   type EvidenceKind,
   type EvidenceIntakeKind,
   type EvidenceSource,
   type EtsyOperationsState,
   type Product,
   type OperationsTab,
+  isEvidenceFileClassificationReady,
+  isSupportedEvidenceFile,
 } from "../lib/etsyOperations";
 import { buildDecisionControlState } from "../lib/decisionControl";
 
 type UploadDraft = EvidenceUploadDraft;
 const UPLOAD_DRAFT_KEY = "mygiftstyle-etsy-operations:upload-draft";
-const EMPTY_UPLOAD: UploadDraft = { file: null, sourceUrl: "", kind: "shop-stats", source: "etsy", periodStart: "", periodEnd: "", targetType: "shop", targetId: "shop" };
+const EMPTY_UPLOAD: UploadDraft = { files: [], sourceUrl: "", kind: "shop-stats", source: "etsy", periodStart: "", periodEnd: "", targetType: "shop", targetId: "shop" };
 
 const SOURCES: Array<{ id: EvidenceSource; label: string }> = [
   { id: "etsy", label: "Etsy first-party" }, { id: "erank", label: "eRank" }, { id: "everbee", label: "EverBee" }, { id: "owner", label: "Owner-provided" }, { id: "instagram", label: "Instagram Insights" }, { id: "pinterest", label: "Pinterest Analytics" }, { id: "facebook", label: "Facebook / Meta Insights" }, { id: "threads", label: "Threads Insights" },
@@ -57,8 +66,8 @@ const KINDS: Array<{ id: EvidenceKind; label: string }> = [
 
 function loadUploadDraft(): UploadDraft {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(UPLOAD_DRAFT_KEY) ?? "{}") as Partial<Omit<UploadDraft, "file">>;
-    return { ...EMPTY_UPLOAD, ...saved, file: null };
+    const saved = JSON.parse(sessionStorage.getItem(UPLOAD_DRAFT_KEY) ?? "{}") as Partial<Omit<UploadDraft, "files">>;
+    return { ...EMPTY_UPLOAD, ...saved, files: [] };
   } catch { return EMPTY_UPLOAD; }
 }
 
@@ -78,6 +87,27 @@ function loadActiveDesignId() {
 }
 
 function dataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); }); }
+function evidenceMimeType(file: File) {
+  const isImage = file.type.startsWith("image/") || /\.(png|jpe?g)$/i.test(file.name);
+  return file.type || (isImage
+    ? (/\.png$/i.test(file.name) ? "image/png" : "image/jpeg")
+    : /\.csv$/i.test(file.name)
+      ? "text/csv"
+      : /\.tsv$/i.test(file.name)
+        ? "text/tab-separated-values"
+        : /\.xls$/i.test(file.name)
+          ? "application/vnd.ms-excel"
+          : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+function classificationAmbiguity(classification: EvidenceFileClassification): EvidenceFileClassification["ambiguity"] {
+  const ambiguity: EvidenceFileClassification["ambiguity"] = [];
+  if (!classification.kind) ambiguity.push("kind");
+  if (!classification.source) ambiguity.push("source");
+  if (!classification.targetType || !classification.targetId) ambiguity.push("target");
+  if (!classification.periodStart) ambiguity.push("periodStart");
+  if (!classification.periodEnd) ambiguity.push("periodEnd");
+  return ambiguity;
+}
 function metricClass(status: EvidenceArtifact["metrics"][number]["status"]) { return status === "confirmed" ? "text-sage" : status === "confirmed-zero" ? "text-copper" : "text-brand"; }
 function implementationTone(status: "ready" | "gated" | "draft" | "phase-2") {
   if (status === "ready") return "border-sage/25 bg-[#F3F8F4] text-sage";
@@ -105,6 +135,9 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const [selectedListingId, setSelectedListingId] = useState("");
   const [auditPeriod, setAuditPeriod] = useState({ start: "", end: "" });
   const [upload, setUpload] = useState<UploadDraft>(loadUploadDraft);
+  const [fileDrafts, setFileDrafts] = useState<EvidenceUploadFileDraft[]>([]);
+  const [batchItems, setBatchItems] = useState<EvidenceBatchItem[]>([]);
+  const classificationRunRef = useRef(0);
   const [reviewArtifactId, setReviewArtifactId] = useState<string | null>(null);
   const [product, setProduct] = useState(EMPTY_PRODUCT);
   const [design, setDesign] = useState(EMPTY_DESIGN);
@@ -114,7 +147,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const showToast = (message: string) => { setNotice(message); setToast(message); };
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 6000); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => { try { localStorage.setItem(ACTIVE_DESIGN_KEY, activeDesignId); } catch { /* Active selection remains available for this session. */ } }, [activeDesignId]);
-  useEffect(() => { try { const { file: _file, ...recoverableDraft } = upload; sessionStorage.setItem(UPLOAD_DRAFT_KEY, JSON.stringify(recoverableDraft)); } catch { /* The visible form remains usable when browser storage is unavailable. */ } }, [upload]);
+  useEffect(() => { try { const { files: _files, ...recoverableDraft } = upload; sessionStorage.setItem(UPLOAD_DRAFT_KEY, JSON.stringify(recoverableDraft)); } catch { /* The visible form remains usable when browser storage is unavailable. */ } }, [upload]);
   useEffect(() => {
     void (async () => {
       try {
@@ -149,6 +182,97 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
 
   async function commit(next: EtsyOperationsState, message: string) { setState(next); try { await saveOperationsState(next); window.dispatchEvent(new Event("etsy-operations-updated")); showToast(message); } catch { showToast("Saved in this browser session only. IndexedDB could not be written."); } }
   const updateUpload = <K extends keyof UploadDraft>(key: K, value: UploadDraft[K]) => setUpload((current) => ({ ...current, [key]: value }));
+  async function inspectEvidenceFiles(files: File[]) {
+    const runId = classificationRunRef.current + 1;
+    classificationRunRef.current = runId;
+    setBatchItems([]);
+    setUpload((current) => ({ ...current, files, sourceUrl: "" }));
+    if (files.length > MAX_EVIDENCE_BATCH_FILES) {
+      setFileDrafts([]);
+      showToast(`Select no more than ${MAX_EVIDENCE_BATCH_FILES} files in one batch.`);
+      return;
+    }
+    const initialDrafts: EvidenceUploadFileDraft[] = files.map((file) => ({
+      id: createId("intake-file"),
+      file,
+      mimeType: evidenceMimeType(file),
+      classification: { status: "ambiguous", ambiguity: ["kind", "source", "target", "periodStart", "periodEnd"], signals: [`File: ${file.name}`] },
+      classificationConfirmed: false,
+      status: "queued",
+      detail: "Waiting for independent inspection.",
+    }));
+    setFileDrafts(initialDrafts);
+    const targets = state ? [
+      { targetType: "shop" as const, targetId: "shop", labels: ["entire shop", "shop stats"] },
+      ...state.listings.map((listing) => ({ targetType: "listing" as const, targetId: listing.id, labels: [listing.id, listing.title] })),
+      ...state.products.map((product) => ({ targetType: "product" as const, targetId: product.id, labels: [product.id, product.name] })),
+      ...state.designs.map((designItem) => ({ targetType: "design" as const, targetId: designItem.id, labels: [designItem.id, designItem.name, designItem.assetName] })),
+    ] : [];
+    for (const [index, file] of files.entries()) {
+      if (classificationRunRef.current !== runId) return;
+      setFileDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? { ...draft, status: "inspecting", detail: `Inspecting ${index + 1} of ${files.length}.` } : draft));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      try {
+        if (!isSupportedEvidenceFile(file)) throw new Error("Unsupported file type. Use PNG, JPG, CSV, TSV, XLS or XLSX.");
+        const isImage = evidenceMimeType(file).startsWith("image/");
+        const parsed = isImage ? { rows: null, headers: [], metrics: [], contentText: "" } : await parseWorkbook(await file.arrayBuffer());
+        const classification = classifyEvidenceFile({ name: file.name, type: file.type, headers: parsed.headers, contentText: parsed.contentText, targets });
+        const ready = isEvidenceFileClassificationReady(classification);
+        setFileDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? {
+          ...draft,
+          parsed,
+          classification,
+          status: ready ? "ready" : "needs-review",
+          detail: ready
+            ? "Deterministic signals found. Metadata is provisional; the saved artifact will remain owner-unconfirmed."
+            : "One or more metadata fields are ambiguous. This file stays unsaved until owner correction or confirmation.",
+        } : draft));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "This file could not be inspected.";
+        setFileDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? { ...draft, status: "error", detail } : draft));
+      }
+    }
+  }
+  function updateFileClassification(index: number, patch: Partial<EvidenceFileClassification>) {
+    setFileDrafts((current) => current.map((draft, draftIndex) => {
+      if (draftIndex !== index || draft.status === "error") return draft;
+      const classification = { ...draft.classification, ...patch };
+      classification.ambiguity = classificationAmbiguity(classification);
+      classification.status = "ambiguous";
+      return {
+        ...draft,
+        classification,
+        classificationConfirmed: false,
+        status: "needs-review",
+        detail: "Owner correction entered. Confirm this file classification before save; evidence confirmation still happens after save.",
+      };
+    }));
+  }
+  function confirmFileClassification(index: number) {
+    const selectedDraft = fileDrafts[index];
+    if (!selectedDraft || selectedDraft.status === "error") return;
+    const ambiguity = classificationAmbiguity(selectedDraft.classification);
+    if (ambiguity.length || !selectedDraft.classification.periodStart || !selectedDraft.classification.periodEnd || selectedDraft.classification.periodStart > selectedDraft.classification.periodEnd) {
+      setFileDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? { ...draft, classification: { ...draft.classification, ambiguity, status: "ambiguous" }, status: "needs-review" } : draft));
+      showToast("Complete this file's type, source, target and valid coverage dates before confirming its classification.");
+      return;
+    }
+    setFileDrafts((current) => current.map((draft, draftIndex) => {
+      if (draftIndex !== index) return draft;
+      return {
+        ...draft,
+        classification: { ...draft.classification, ambiguity: [], status: "classified", signals: [...draft.classification.signals, "Owner confirmed or corrected this file's classification"] },
+        classificationConfirmed: true,
+        status: "ready",
+        detail: "Owner confirmed this file classification. The saved evidence artifact will still start unconfirmed.",
+      };
+    }));
+  }
+  function removeFileDraft(index: number) {
+    const remaining = fileDrafts.filter((_, draftIndex) => draftIndex !== index);
+    setFileDrafts(remaining);
+    setUpload((uploadDraft) => ({ ...uploadDraft, files: remaining.map((draft) => draft.file) }));
+  }
   const updateProduct = <K extends keyof Omit<Product, "id">>(key: K, value: Omit<Product, "id">[K]) => setProduct((current) => ({ ...current, [key]: value }));
   const updateDesign = <K extends keyof Omit<Design, "id">>(key: K, value: Omit<Design, "id">[K]) => setDesign((current) => ({ ...current, [key]: value }));
   function chooseActiveDesign(nextDesignId: string) {
@@ -169,16 +293,22 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
 
   function prepareEvidenceStep(kind: EvidenceIntakeKind) {
     if (!selectedListingId || !auditPeriod.start || !auditPeriod.end || auditPeriod.start > auditPeriod.end) { showToast("Choose a listing and valid comparable start/end dates first."); return; }
-    if ((upload.file || upload.sourceUrl.trim()) && !window.confirm("Switch the evidence lane? This clears the unsaved file or source link; saved evidence is not affected.")) return;
+    if ((fileDrafts.length || upload.sourceUrl.trim()) && !window.confirm("Switch the evidence lane? This clears the unsaved files or source link; saved evidence is not affected.")) return;
     const targetType = kind === "shop-stats" ? "shop" : "listing";
-    setUpload((current) => ({ ...current, file: null, sourceUrl: "", kind, source: "etsy", periodStart: auditPeriod.start, periodEnd: auditPeriod.end, targetType, targetId: targetType === "shop" ? "shop" : selectedListingId }));
+    classificationRunRef.current += 1;
+    setFileDrafts([]);
+    setUpload((current) => ({ ...current, files: [], sourceUrl: "", kind, source: "etsy", periodStart: auditPeriod.start, periodEnd: auditPeriod.end, targetType, targetId: targetType === "shop" ? "shop" : selectedListingId }));
+    setBatchItems([]);
     showToast(`${kind === "shop-stats" ? "Shop Stats" : kind === "listing-performance" ? "Listing Performance" : "Traffic Sources"} lane prepared for ${auditPeriod.start} → ${auditPeriod.end}. Add the export, save it, then review before confirmation.`);
   }
 
   function prepareJournalEvidence(kind: "product-facts" | "cost-fulfilment") {
     if (!journal) return;
-    if ((upload.file || upload.sourceUrl.trim()) && !window.confirm("Switch the evidence lane? This clears the unsaved file or source link; saved evidence is not affected.")) return;
-    setUpload((current) => ({ ...current, file: null, sourceUrl: "", kind, source: "owner", targetType: "product", targetId: journal.id }));
+    if ((fileDrafts.length || upload.sourceUrl.trim()) && !window.confirm("Switch the evidence lane? This clears the unsaved files or source link; saved evidence is not affected.")) return;
+    classificationRunRef.current += 1;
+    setFileDrafts([]);
+    setUpload((current) => ({ ...current, files: [], sourceUrl: "", kind, source: "owner", targetType: "product", targetId: journal.id }));
+    setBatchItems([]);
     showToast(kind === "product-facts" ? "Journal product-facts lane prepared. Add a product-page/specification screenshot or export, then date and save it." : "Journal cost-and-fulfilment lane prepared. Paste a dated supplier/official link or add a cost file, then save and confirm it.");
   }
 
@@ -197,17 +327,54 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   async function saveUpload() {
     const sourceUrl = upload.sourceUrl.trim();
     const isValidUrl = sourceUrl ? /^https?:\/\//i.test(sourceUrl) : false;
-    if (!state || (!upload.file && !isValidUrl) || !upload.periodStart || !upload.periodEnd || !upload.targetId) { showToast("Choose a file or valid https:// source link, dated coverage, and a linked target before saving evidence."); return; }
+    if (!state) return;
+    if (fileDrafts.length && sourceUrl) { showToast("Choose either the mixed file inventory or one source link so every record keeps unambiguous lineage."); return; }
     try {
-      const file = upload.file;
-      const isImage = Boolean(file?.type.startsWith("image/"));
-      const buffer = file && !isImage ? await file.arrayBuffer() : null;
-      const parsed = buffer ? await parseWorkbook(buffer) : { rows: null, headers: [], metrics: [], contentText: sourceUrl ? `Source link: ${sourceUrl}` : "" };
-      const linkName = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, "") : "source-link";
-      const artifact: EvidenceArtifact = { id: createId("evidence"), kind: upload.kind, source: upload.source, authority: sourceAuthority(upload.source), fileName: file?.name ?? linkName, mimeType: file?.type || (sourceUrl ? "text/uri-list" : "application/octet-stream"), uploadedAt: new Date().toISOString(), periodStart: upload.periodStart, periodEnd: upload.periodEnd, targetType: upload.targetType, targetId: upload.targetId, ownerConfirmed: false, ocrStatus: isImage ? "pending" : "not-needed", ...parsed, ...(file ? { dataUrl: await dataUrl(file) } : {}), ...(sourceUrl ? { sourceUrl } : {}) };
-      await commit({ ...state, artifacts: [artifact, ...state.artifacts] }, `${file?.name ?? linkName} saved locally. Confirm its values before using it in a decision.`);
-      setUpload((current) => ({ ...current, file: null, sourceUrl: "" }));
-    } catch { showToast("This file could not be parsed. Try a CSV/XLSX export or a PNG/JPG screenshot."); }
+      if (fileDrafts.length) {
+        const readyDrafts = fileDrafts.filter((draft) => draft.status === "ready" && isEvidenceFileClassificationReady(draft.classification));
+        if (!readyDrafts.length) { showToast("No file is ready to save. Correct and confirm one ambiguous file, or remove file errors."); return; }
+        const batch = await processEvidenceBatch(readyDrafts.map((draft) => draft.file), async (file, index) => {
+          const draft = readyDrafts[index];
+          const classification = draft.classification;
+          const isImage = draft.mimeType.startsWith("image/");
+          if (!draft.parsed || !isEvidenceFileClassificationReady(classification)) throw new Error("Per-file inspection or classification is incomplete.");
+          return {
+            id: createId("evidence"),
+            kind: classification.kind!,
+            source: classification.source!,
+            authority: sourceAuthority(classification.source!),
+            fileName: file.name,
+            mimeType: draft.mimeType,
+            uploadedAt: new Date().toISOString(),
+            periodStart: classification.periodStart!,
+            periodEnd: classification.periodEnd!,
+            targetType: classification.targetType!,
+            targetId: classification.targetId!,
+            ownerConfirmed: false,
+            ocrStatus: isImage ? "pending" as const : "not-needed" as const,
+            ...draft.parsed,
+            ...(isImage ? { dataUrl: await dataUrl(file) } : {}),
+          } satisfies EvidenceArtifact;
+        }, setBatchItems);
+        const artifacts = batch.successes.map((item) => item.value);
+        const successfulDraftIds = new Set(batch.successes.map((item) => readyDrafts[item.index].id));
+        const failedByDraftId = new Map(batch.failures.map((item) => [readyDrafts[item.index].id, item.error]));
+        const remainingDrafts = fileDrafts
+          .filter((draft) => !successfulDraftIds.has(draft.id))
+          .map((draft) => failedByDraftId.has(draft.id) ? { ...draft, status: "error" as const, detail: failedByDraftId.get(draft.id)! } : draft);
+        if (artifacts.length) await commit({ ...state, artifacts: [...artifacts, ...state.artifacts] }, `${artifacts.length} ready file${artifacts.length === 1 ? "" : "s"} saved with separate lineage and owner-unconfirmed evidence state; ${remainingDrafts.length} unresolved or failed file${remainingDrafts.length === 1 ? " remains" : "s remain"} visible.`);
+        else showToast(`No files were saved. ${batch.failures.length} file${batch.failures.length === 1 ? "" : "s"} failed; review the per-file errors.`);
+        setFileDrafts(remainingDrafts);
+        setUpload((current) => ({ ...current, files: remainingDrafts.map((draft) => draft.file), sourceUrl: "" }));
+        return;
+      }
+      if (!isValidUrl || !upload.periodStart || !upload.periodEnd || upload.periodStart > upload.periodEnd || !upload.targetId) { showToast("Choose a valid https:// source link, dated coverage, and a linked target before saving link evidence."); return; }
+      const linkName = new URL(sourceUrl).hostname.replace(/^www\./, "");
+      const artifact: EvidenceArtifact = { id: createId("evidence"), kind: upload.kind, source: upload.source, authority: sourceAuthority(upload.source), fileName: linkName, mimeType: "text/uri-list", uploadedAt: new Date().toISOString(), periodStart: upload.periodStart, periodEnd: upload.periodEnd, targetType: upload.targetType, targetId: upload.targetId, ownerConfirmed: false, ocrStatus: "not-needed", rows: null, headers: [], metrics: [], contentText: `Source link: ${sourceUrl}`, sourceUrl };
+      await commit({ ...state, artifacts: [artifact, ...state.artifacts] }, `${linkName} saved locally. Confirm its source before using it in a decision.`);
+      setUpload((current) => ({ ...current, files: [], sourceUrl: "" }));
+      setBatchItems([]);
+    } catch (error) { showToast(error instanceof Error ? error.message : "This batch could not be processed. Valid files remain visible and are not erased by a failed file."); }
   }
 
   async function runOcr(artifact: EvidenceArtifact) {
@@ -333,6 +500,12 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const eligibleArtifacts = state.artifacts.filter((item) => item.ownerConfirmed);
   const activeDesign = state.designs.find((item) => item.id === activeDesignId)
     ?? state.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID);
+  const coachDiagnosis = buildCoachDiagnosis(state, {
+    activeDesignId: activeDesign?.id,
+    selectedListingId,
+    periodStart: auditPeriod.start,
+    periodEnd: auditPeriod.end,
+  });
   const activeLoop = state.keywordResearchLoops.find((item) => item.designId === activeDesign?.id);
   const activeResearch = state.artifacts.filter((item) => item.kind === "keyword-research" && item.ownerConfirmed && (item.targetId === activeDesign?.id || item.targetId === activeDesign?.productId));
   const activeSeeds = activeLoop?.queries?.length
@@ -567,6 +740,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         </div>
       </details>
     </section>
+    {operationsTab === "today" && <CoachDiagnosisCard diagnosis={coachDiagnosis} onAction={setOperationsTab} />}
     {operationsTab === "results" && <section className="rounded-[26px] border border-copper/25 bg-[#FFF9F3] p-5 shadow-card sm:p-6" aria-label="Listing Brief workspace status"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">{activeDesign?.name ?? "Choose a design"} · Listing Brief</p><h3 className="mt-1 font-display text-2xl font-bold text-ink">{hasApprovedDraft ? "Approved for manual Etsy entry" : hasDraft ? "Saved draft ready for review" : hasKeywordDecision ? "Ready to create the draft" : "Waiting for a keyword decision"}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasApprovedDraft ? "The current draft is the exact package approved for manual entry. Nothing has been published or connected." : hasDraft ? savedDraftReadyForApproval ? "Your current draft has the required product, research, tag, and blocked-claim checks. Review it, then approve only when you are satisfied." : `This saved draft still needs: ${savedDraftBlockingIssue}.` : hasKeywordDecision ? "The keyword decision is ready. Load the complete draft package below; no extra keyword typing is needed." : "Go to 分析與決定 first. The dashboard will show whether it needs deeper research or can create the Listing Brief."}</p></div><div className="flex shrink-0 flex-wrap gap-2">{hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved draft</button>}{!hasDraft && hasKeywordDecision && <button type="button" onClick={openActiveListingBrief} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Load Listing Brief</button>}{hasDraft && !hasApprovedDraft && savedDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual entry</button>}{!hasKeywordDecision && !hasDraft && <button type="button" onClick={() => setOperationsTab("analysis")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Open analysis</button>}</div></div></section>}
     {hasDraft && <section className={`rounded-[26px] border p-5 shadow-card ${hasApprovedDraft ? "border-sage/25 bg-[#E8F0E6]" : savedDraftReadyForApproval ? "border-sage/25 bg-[#F3F8F4]" : "border-copper/25 bg-[#F9EEE4]"}`} aria-label="Active design manual entry status"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">{activeDesign?.name ?? "Active design"} · manual entry status</p><h3 className="mt-1 text-xl font-bold text-ink">{hasApprovedDraft ? "已批准作手動輸入 Etsy" : savedDraftReadyForApproval ? "已準備好，等你批准" : "未可批准"}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasApprovedDraft ? "目前顯示同複製嘅正是已批准草稿；此 dashboard 從未發佈、修改或連接 Etsy。" : savedDraftReadyForApproval ? "毋須再提供資料。你只需檢查目前草稿，然後按一次批准。" : `而家只需要處理：${savedDraftBlockingIssue}。`}</p></div><div className="flex shrink-0 flex-wrap gap-2">{hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved Listing Brief</button>}{!hasApprovedDraft && savedDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual Etsy entry</button>}{!hasApprovedDraft && !savedDraftReadyForApproval && <button type="button" onClick={() => setOperationsTab("results")} className="rounded-xl border border-line bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-[#F8EDE4]">查看需要處理項目</button>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{[["產品、Design、research evidence", savedDraftApprovalGaps.length === 0], ["13 個有效 tags", savedDraftTagIssues.length === 0], ["Customer-facing blocked claims", savedDraftPackageIssues.length === 0], ["Owner approval", hasApprovedDraft]].map(([label, complete]) => <div key={label as string} className="rounded-xl border border-white bg-white/80 px-3 py-2 text-xs"><span className={`mr-1 font-bold ${complete ? "text-sage" : "text-copper"}`}>{complete ? "✓" : "•"}</span><span className="font-semibold text-ink">{label}</span><span className="ml-1 text-muted">{complete ? "完成" : "未完成"}</span></div>)}</div></section>}
     {toast && <div role="status" aria-live="polite" className="fixed bottom-5 right-5 z-50 flex max-w-[min(26rem,calc(100vw-2rem))] items-start gap-3 rounded-2xl border border-[#B9D7C0] bg-white p-4 shadow-xl"><CheckCircle2 size={20} className="mt-0.5 shrink-0 text-sage" aria-hidden="true" /><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-sage">Dashboard received it</p><p className="mt-1 text-sm font-semibold text-ink">{toast}</p></div><button type="button" onClick={() => setToast(null)} aria-label="Close confirmation" className="ml-1 rounded-md p-1 text-muted hover:bg-[#F8EDE4] hover:text-ink"><X size={16} /></button></div>}
@@ -644,11 +818,17 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         selectedListingId={selectedListingId}
         period={auditPeriod}
         upload={upload}
+        fileDrafts={fileDrafts}
+        batchItems={batchItems}
         reviewArtifact={reviewArtifact}
         onSelectListing={setSelectedListingId}
         onPeriodChange={setAuditPeriod}
         onPrepareStep={prepareEvidenceStep}
         onUploadChange={updateUpload}
+        onSelectFiles={(files) => void inspectEvidenceFiles(files)}
+        onFileClassificationChange={updateFileClassification}
+        onConfirmFileClassification={confirmFileClassification}
+        onRemoveFileDraft={removeFileDraft}
         onSaveUpload={() => void saveUpload()}
         onReviewArtifact={openArtifactReview}
         onRunOcr={(artifact) => void runOcr(artifact)}
@@ -660,8 +840,8 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     {false && <section hidden={operationsTab !== "research"} style={{ display: operationsTab === "research" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6" aria-label="Research evidence inbox">
       <div className="flex items-center gap-2 text-brand"><Upload size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Evidence Inbox</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Save dated source evidence before asking Codex for a decision</h3>
       <div className="mt-5 rounded-2xl border border-[#D9E7DE] bg-[#F3F8F4] p-4" aria-label="Journal listing fast lane"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">Journal listing fast lane</p><p className="mt-1 text-sm font-semibold text-ink">Complete only the next missing input; no manual product-data retyping.</p></div><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-ink">{journalEvidenceGaps.length} evidence item{journalEvidenceGaps.length === 1 ? "" : "s"} remaining</span></div><div className="mt-4 grid gap-3 md:grid-cols-3"><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">1. Product facts</p><p className="mt-1 text-xs text-muted">Use a product-page/specification screenshot when available. Your earlier confirmed baseline can also be recorded as a removable owner attestation.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => prepareJournalEvidence("product-facts")} className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4]">Prepare product facts</button><button type="button" onClick={() => void attestJournalBaseline()} className="rounded-lg bg-[#E8F0E6] px-3 py-2 text-xs font-bold text-sage hover:bg-[#D9E7DE]">Record owner baseline</button></div></div><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">2. Cost &amp; fulfilment</p><p className="mt-1 text-xs text-muted">Paste a dated Google Sheet or supplier link, or add a cost export. No screenshot is needed for a stable official page.</p><button type="button" onClick={() => prepareJournalEvidence("cost-fulfilment")} className="mt-3 rounded-lg bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand">Prepare cost source</button></div><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">3. Keyword research</p><p className="mt-1 text-xs text-muted">Paste screenshot or upload eRank/EverBee CSV. The dashboard runs OCR after your confirmation.</p><button type="button" onClick={() => setOperationsTab("research")} className="mt-3 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4]">Open keyword research</button></div></div></div>
-      <div className="mt-5 grid gap-3 lg:grid-cols-3"><label className="text-xs font-semibold text-ink">Evidence type<select value={upload.kind} onChange={(event) => updateUpload("kind", event.target.value as EvidenceKind)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop-stats">Shop Stats overview</option>{KINDS.filter((item) => item.id !== "shop-stats").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Source<select value={upload.source} onChange={(event) => updateUpload("source", event.target.value as EvidenceSource)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{SOURCES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Linked target<select value={`${upload.targetType}:${upload.targetId}`} onChange={(event) => { const [targetType, targetId] = event.target.value.split(":"); setUpload((current) => ({ ...current, targetType: targetType as UploadDraft["targetType"], targetId })); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop:shop">Entire shop</option>{renderedState.listings.map((item) => <option key={item.id} value={`listing:${item.id}`}>{item.title} ({item.id})</option>)}{renderedState.products.map((item) => <option key={item.id} value={`product:${item.id}`}>Product: {item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Coverage start<input type="date" value={upload.periodStart} onChange={(event) => updateUpload("periodStart", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">Coverage end<input type="date" value={upload.periodEnd} onChange={(event) => updateUpload("periodEnd", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="flex cursor-pointer items-end"><span className="flex w-full items-center justify-center gap-2 rounded-xl bg-ink px-3 py-2.5 text-xs font-bold text-white hover:bg-brand"><FileUp size={15} />{upload.file?.name || "Choose PNG, JPG, CSV or XLSX"}<input className="sr-only" type="file" accept=".csv,.tsv,.xlsx,.xls,image/png,image/jpeg" onChange={(event) => updateUpload("file", event.target.files?.[0] ?? null)} /></span></label><label className="text-xs font-semibold text-ink lg:col-span-3">Source link <span className="font-normal text-muted">(optional alternative to a file; use for a dated supplier or official page)</span><input type="url" inputMode="url" placeholder="https://…" value={upload.sourceUrl} onChange={(event) => updateUpload("sourceUrl", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" aria-describedby="source-link-help" /><span id="source-link-help" className="mt-1 block font-normal text-muted">A link is a reference record only. Confirm it after checking the displayed source; add a CSV or screenshot when values need OCR or parsing.</span></label></div>
-      <button type="button" onClick={() => void saveUpload()} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-white hover:bg-[#D94F0D]"><Upload size={15} />{upload.file ? "Save local evidence" : upload.sourceUrl.trim() ? "Save source link" : "Save local evidence"}</button>
+      <div className="mt-5 grid gap-3 lg:grid-cols-3"><label className="text-xs font-semibold text-ink">Evidence type<select value={upload.kind} onChange={(event) => updateUpload("kind", event.target.value as EvidenceKind)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop-stats">Shop Stats overview</option>{KINDS.filter((item) => item.id !== "shop-stats").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Source<select value={upload.source} onChange={(event) => updateUpload("source", event.target.value as EvidenceSource)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{SOURCES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Linked target<select value={`${upload.targetType}:${upload.targetId}`} onChange={(event) => { const [targetType, targetId] = event.target.value.split(":"); setUpload((current) => ({ ...current, targetType: targetType as UploadDraft["targetType"], targetId })); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop:shop">Entire shop</option>{renderedState.listings.map((item) => <option key={item.id} value={`listing:${item.id}`}>{item.title} ({item.id})</option>)}{renderedState.products.map((item) => <option key={item.id} value={`product:${item.id}`}>Product: {item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Coverage start<input type="date" value={upload.periodStart} onChange={(event) => updateUpload("periodStart", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">Coverage end<input type="date" value={upload.periodEnd} onChange={(event) => updateUpload("periodEnd", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="flex cursor-pointer items-end"><span className="flex w-full items-center justify-center gap-2 rounded-xl bg-ink px-3 py-2.5 text-xs font-bold text-white hover:bg-brand"><FileUp size={15} />{upload.files.length ? `${upload.files.length} files selected` : "Choose PNG, JPG, CSV or XLSX"}<input className="sr-only" type="file" multiple accept=".csv,.tsv,.xlsx,.xls,image/png,image/jpeg" onChange={(event) => updateUpload("files", Array.from(event.target.files ?? []))} /></span></label><label className="text-xs font-semibold text-ink lg:col-span-3">Source link <span className="font-normal text-muted">(optional alternative to a file; use for a dated supplier or official page)</span><input type="url" inputMode="url" placeholder="https://…" value={upload.sourceUrl} onChange={(event) => updateUpload("sourceUrl", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" aria-describedby="source-link-help" /><span id="source-link-help" className="mt-1 block font-normal text-muted">A link is a reference record only. Confirm it after checking the displayed source; add a CSV or screenshot when values need OCR or parsing.</span></label></div>
+      <button type="button" onClick={() => void saveUpload()} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-white hover:bg-[#D94F0D]"><Upload size={15} />{upload.files.length ? "Save local evidence" : upload.sourceUrl.trim() ? "Save source link" : "Save local evidence"}</button>
       <div className="mt-5 overflow-x-auto rounded-2xl border border-line">
         <table className="w-full min-w-[780px] text-left text-xs">
           <thead className="bg-[#F8F3ED] text-muted"><tr><th className="px-4 py-3">Evidence</th><th className="px-4 py-3">Scope / period</th><th className="px-4 py-3">Authority</th><th className="px-4 py-3">Data state</th><th className="px-4 py-3">Action</th></tr></thead>

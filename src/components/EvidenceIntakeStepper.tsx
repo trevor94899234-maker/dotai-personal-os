@@ -3,17 +3,21 @@ import { ClipboardCheck, FileCheck2, FileUp, ShieldCheck, X } from "lucide-react
 import {
   EVIDENCE_INTAKE_REQUIREMENTS,
   buildEvidenceIntakeSteps,
+  deriveEvidenceGroups,
   isEvidenceEligibleForDecision,
   shouldRunOcrBeforeConfirm,
   type EvidenceArtifact,
+  type EvidenceBatchItem,
+  type EvidenceFileClassification,
   type EvidenceIntakeKind,
   type EvidenceKind,
+  type ParsedEvidenceFile,
   type EvidenceSource,
   type EtsyOperationsState,
 } from "../lib/etsyOperations";
 
 export type EvidenceUploadDraft = {
-  file: File | null;
+  files: File[];
   sourceUrl: string;
   kind: EvidenceKind;
   source: EvidenceSource;
@@ -21,6 +25,17 @@ export type EvidenceUploadDraft = {
   periodEnd: string;
   targetType: EvidenceArtifact["targetType"];
   targetId: string;
+};
+
+export type EvidenceUploadFileDraft = {
+  id: string;
+  file: File;
+  mimeType: string;
+  parsed?: ParsedEvidenceFile;
+  classification: EvidenceFileClassification;
+  classificationConfirmed: boolean;
+  status: "queued" | "inspecting" | "ready" | "needs-review" | "error";
+  detail: string;
 };
 
 export const EVIDENCE_SOURCES: Array<{ id: EvidenceSource; label: string }> = [
@@ -50,11 +65,17 @@ type Props = {
   selectedListingId: string;
   period: { start: string; end: string };
   upload: EvidenceUploadDraft;
+  fileDrafts: EvidenceUploadFileDraft[];
+  batchItems: EvidenceBatchItem[];
   reviewArtifact?: EvidenceArtifact;
   onSelectListing: (listingId: string) => void;
   onPeriodChange: (period: { start: string; end: string }) => void;
   onPrepareStep: (kind: EvidenceIntakeKind) => void;
   onUploadChange: <K extends keyof EvidenceUploadDraft>(key: K, value: EvidenceUploadDraft[K]) => void;
+  onSelectFiles: (files: File[]) => void;
+  onFileClassificationChange: (index: number, patch: Partial<EvidenceFileClassification>) => void;
+  onConfirmFileClassification: (index: number) => void;
+  onRemoveFileDraft: (index: number) => void;
   onSaveUpload: () => void;
   onReviewArtifact: (id: string) => void;
   onRunOcr: (artifact: EvidenceArtifact) => void;
@@ -65,6 +86,7 @@ type Props = {
 
 function statusLabel(status: ReturnType<typeof buildEvidenceIntakeSteps>[number]["status"]) {
   if (status === "confirmed") return "Confirmed · eligible";
+  if (status === "conflict") return "Conflict · diagnosis blocked";
   if (status === "review") return "Saved · review needed";
   if (status === "not-eligible") return "Confirmed · not decision-ready";
   return "Missing";
@@ -72,6 +94,7 @@ function statusLabel(status: ReturnType<typeof buildEvidenceIntakeSteps>[number]
 
 function statusClass(status: ReturnType<typeof buildEvidenceIntakeSteps>[number]["status"]) {
   if (status === "confirmed") return "border-sage/25 bg-[#E8F0E6] text-sage";
+  if (status === "conflict") return "border-brand/25 bg-[#FFF1E8] text-brand";
   if (status === "review") return "border-copper/25 bg-[#FFF9F3] text-copper";
   if (status === "not-eligible") return "border-brand/25 bg-[#FFF1E8] text-brand";
   return "border-line bg-white text-muted";
@@ -97,11 +120,17 @@ export default function EvidenceIntakeStepper({
   selectedListingId,
   period,
   upload,
+  fileDrafts,
+  batchItems,
   reviewArtifact,
   onSelectListing,
   onPeriodChange,
   onPrepareStep,
   onUploadChange,
+  onSelectFiles,
+  onFileClassificationChange,
+  onConfirmFileClassification,
+  onRemoveFileDraft,
   onSaveUpload,
   onReviewArtifact,
   onRunOcr,
@@ -115,6 +144,21 @@ export default function EvidenceIntakeStepper({
   const periodReady = Boolean(selectedListingId && period.start && period.end && period.start <= period.end);
   const reviewHasDataProblem = reviewArtifact?.metrics.some((metric) => metric.status === "missing" || metric.status === "invalid");
   const reviewNeedsOcr = reviewArtifact ? shouldRunOcrBeforeConfirm(reviewArtifact) : false;
+  const groups = deriveEvidenceGroups(state.artifacts);
+  const duplicateCount = groups.reduce((total, group) => total + group.duplicateArtifactIds.length, 0);
+  const conflictCount = groups.reduce((total, group) => total + group.conflicts.length, 0);
+  const unconfirmedCount = groups.reduce((total, group) => total + group.unconfirmedArtifactIds.length, 0);
+  const staleCount = groups.filter((group) => group.stale).length;
+  const confirmedZeroCount = groups.reduce((total, group) => total + group.metrics.filter((metric) => metric.status === "confirmed-zero").length, 0);
+  const ocrNeededCount = state.artifacts.filter((artifact) => shouldRunOcrBeforeConfirm(artifact)).length;
+  const protectedCount = state.listings.filter((listing) => listing.protected).length;
+  const readyFileDrafts = fileDrafts.filter((item) => item.status === "ready").length;
+  const ambiguousFileDrafts = fileDrafts.filter((item) => item.status === "needs-review").length;
+  const inspectingFileDrafts = fileDrafts.filter((item) => item.status === "queued" || item.status === "inspecting").length;
+  const intakeErrorDrafts = fileDrafts.filter((item) => item.status === "error").length;
+  const completedBatchItems = batchItems.filter((item) => item.status === "saved" || item.status === "error").length;
+  const savedBatchItems = batchItems.filter((item) => item.status === "saved").length;
+  const failedBatchItems = batchItems.filter((item) => item.status === "error").length;
   useEffect(() => { if (reviewArtifact) reviewHeadingRef.current?.focus(); }, [reviewArtifact?.id]);
 
   return <div className="mt-5 space-y-5">
@@ -164,9 +208,42 @@ export default function EvidenceIntakeStepper({
     </section>}
 
     <section className="rounded-2xl border border-line bg-white p-4" aria-label="Add local evidence">
-      <div className="flex items-start gap-2"><FileUp size={18} className="mt-0.5 text-brand" aria-hidden="true" /><div><h4 className="text-lg font-bold text-ink">Add local evidence</h4><p className="mt-1 text-xs leading-5 text-muted">A prepared lane fills the three required Etsy fields. Other local research, product and social evidence can still use this same uploader.</p></div></div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-3"><label className="text-xs font-semibold text-ink">Evidence type<select value={upload.kind} onChange={(event) => onUploadChange("kind", event.target.value as EvidenceKind)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{EVIDENCE_KINDS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Source<select value={upload.source} onChange={(event) => onUploadChange("source", event.target.value as EvidenceSource)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{EVIDENCE_SOURCES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Linked target<select value={`${upload.targetType}:${upload.targetId}`} onChange={(event) => { const [targetType, targetId] = event.target.value.split(":"); onUploadChange("targetType", targetType as EvidenceUploadDraft["targetType"]); onUploadChange("targetId", targetId); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop:shop">Entire shop</option>{state.listings.map((item) => <option key={item.id} value={`listing:${item.id}`}>{item.title} ({item.id})</option>)}{state.products.map((item) => <option key={item.id} value={`product:${item.id}`}>Product: {item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Coverage start<input type="date" value={upload.periodStart} onChange={(event) => onUploadChange("periodStart", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">Coverage end<input type="date" value={upload.periodEnd} onChange={(event) => onUploadChange("periodEnd", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="flex cursor-pointer items-end"><span className="flex w-full items-center justify-center gap-2 rounded-xl bg-ink px-3 py-2.5 text-xs font-bold text-white hover:bg-brand focus-within:ring-2 focus-within:ring-brand focus-within:ring-offset-2"><FileUp size={15} aria-hidden="true" />{upload.file?.name || "Choose PNG, JPG, CSV or XLSX"}<input className="sr-only" type="file" accept=".csv,.tsv,.xlsx,.xls,image/png,image/jpeg" onChange={(event) => onUploadChange("file", event.target.files?.[0] ?? null)} /></span></label><label className="text-xs font-semibold text-ink lg:col-span-3">Source link <span className="font-normal text-muted">(optional alternative to a file)</span><input type="url" inputMode="url" placeholder="https://…" value={upload.sourceUrl} onChange={(event) => onUploadChange("sourceUrl", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" aria-describedby="source-link-help" /><span id="source-link-help" className="mt-1 block font-normal text-muted">A link is a reference record only. Add CSV/XLSX or a screenshot when values need parsing or OCR.</span></label></div>
-      <button type="button" onClick={onSaveUpload} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-white hover:bg-[#D94F0D] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><FileUp size={15} aria-hidden="true" />{upload.file ? "Save local evidence for review" : upload.sourceUrl.trim() ? "Save source link for review" : "Save local evidence for review"}</button>
+      <div className="flex items-start gap-2"><FileUp size={18} className="mt-0.5 text-brand" aria-hidden="true" /><div><h4 className="text-lg font-bold text-ink">Add local evidence</h4><p className="mt-1 text-xs leading-5 text-muted">Choose one mixed dump. Every file is inspected and classified independently before save; unresolved metadata stays visible on that file and never inherits another file's values.</p></div></div>
+      <label className="mt-4 flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl bg-ink px-3 py-2.5 text-xs font-bold text-white hover:bg-brand focus-within:ring-2 focus-within:ring-brand focus-within:ring-offset-2"><FileUp size={15} className="shrink-0" aria-hidden="true" /><span className="min-w-0 truncate">{fileDrafts.length ? `${fileDrafts.length} supplied file${fileDrafts.length === 1 ? "" : "s"}` : "Choose mixed images and CSV/XLSX files"}</span><input className="sr-only" aria-label="Choose mixed evidence files" type="file" multiple accept=".csv,.tsv,.xlsx,.xls,image/png,image/jpeg" onChange={(event) => onSelectFiles(Array.from(event.target.files ?? []))} /></label>
+
+      {fileDrafts.length > 0 && <section className="mt-4 rounded-2xl border border-line bg-[#FBF7F2] p-4" aria-label="Mixed evidence file inventory" aria-live="polite" data-evidence-state={ambiguousFileDrafts ? "ambiguous-review" : inspectingFileDrafts ? "classifying" : intakeErrorDrafts ? "partial-error" : "mixed-files-ready"}>
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><h5 className="text-sm font-bold text-ink">What was supplied and how it was classified</h5><p className="mt-1 text-[11px] leading-4 text-muted">{readyFileDrafts} ready · {ambiguousFileDrafts} need owner review · {inspectingFileDrafts} inspecting · {intakeErrorDrafts} errors</p></div><span className="rounded-full border border-line bg-white px-3 py-1 text-[10px] font-bold uppercase text-muted">Per-file lineage</span></div>
+        <div className="mt-3 grid gap-3">{fileDrafts.map((draft, index) => {
+          const classification = draft.classification;
+          const targetValue = classification.targetType && classification.targetId ? `${classification.targetType}:${classification.targetId}` : "";
+          const controlsDisabled = draft.status === "queued" || draft.status === "inspecting" || draft.status === "error";
+          return <fieldset key={draft.id} className="min-w-0 rounded-xl border border-line bg-white p-3" aria-label={`Classification for ${draft.file.name}`} data-evidence-state={draft.status} data-ocr-state={draft.mimeType.startsWith("image/") ? "ocr-needed-after-save" : "not-needed"}>
+            <legend className="max-w-full px-1 text-xs font-bold text-ink"><span className="break-words">{draft.file.name}</span></legend>
+            <div className="flex flex-wrap items-start justify-between gap-2"><p className="break-words text-[11px] leading-4 text-muted">{draft.mimeType} · {draft.detail}{draft.mimeType.startsWith("image/") ? " Screenshot: OCR needed after save; no numeric truth yet." : ""}</p><output className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold uppercase ${draft.status === "ready" ? "bg-[#E8F0E6] text-sage" : draft.status === "error" ? "bg-[#FFF1E8] text-brand" : "bg-[#FFF9F3] text-copper"}`} aria-label={`${draft.file.name} classification status`}>{draft.status === "ready" ? draft.classificationConfirmed ? "Provisional · owner-corrected" : "Provisional · inferred" : draft.status === "needs-review" ? "Ambiguous · owner review" : draft.status}</output></div>
+            {classification.signals.length > 0 && <details className="mt-2"><summary className="min-h-11 cursor-pointer py-3 text-[11px] font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">Classification signals</summary><ul className="list-disc space-y-1 pl-5 text-[11px] leading-4 text-muted">{classification.signals.map((signal) => <li key={signal}>{signal}</li>)}</ul></details>}
+            {classification.ambiguity.length > 0 && <p className="mt-2 rounded-lg border border-copper/25 bg-[#FFF9F3] p-2 text-[11px] leading-4 text-copper" role="status">Ambiguous or missing: {classification.ambiguity.join(", ")}. Complete the controls and confirm only this file.</p>}
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="text-[11px] font-semibold text-ink">Evidence type<select disabled={controlsDisabled} aria-label={`${draft.file.name} evidence type`} value={classification.kind ?? ""} onChange={(event) => onFileClassificationChange(index, { kind: event.target.value as EvidenceKind || undefined })} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-2 text-xs font-normal disabled:bg-[#F4ECE4]"><option value="">Choose type</option>{EVIDENCE_KINDS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="text-[11px] font-semibold text-ink">Source<select disabled={controlsDisabled} aria-label={`${draft.file.name} evidence source`} value={classification.source ?? ""} onChange={(event) => onFileClassificationChange(index, { source: event.target.value as EvidenceSource || undefined })} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-2 text-xs font-normal disabled:bg-[#F4ECE4]"><option value="">Choose source</option>{EVIDENCE_SOURCES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="text-[11px] font-semibold text-ink">Linked target<select disabled={controlsDisabled} aria-label={`${draft.file.name} linked target`} value={targetValue} onChange={(event) => { const [targetType, targetId] = event.target.value.split(":"); onFileClassificationChange(index, { targetType: targetType as EvidenceUploadDraft["targetType"] || undefined, targetId: targetId || undefined }); }} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-2 text-xs font-normal disabled:bg-[#F4ECE4]"><option value="">Choose target</option><option value="shop:shop">Entire shop</option>{state.listings.map((item) => <option key={item.id} value={`listing:${item.id}`}>{item.title} ({item.id})</option>)}{state.products.map((item) => <option key={item.id} value={`product:${item.id}`}>Product: {item.name}</option>)}{state.designs.map((item) => <option key={item.id} value={`design:${item.id}`}>Design: {item.name}</option>)}</select></label>
+              <label className="text-[11px] font-semibold text-ink">Coverage start<input disabled={controlsDisabled} aria-label={`${draft.file.name} coverage start`} type="date" value={classification.periodStart ?? ""} onChange={(event) => onFileClassificationChange(index, { periodStart: event.target.value || undefined })} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-2 text-xs font-normal disabled:bg-[#F4ECE4]" /></label>
+              <label className="text-[11px] font-semibold text-ink">Coverage end<input disabled={controlsDisabled} aria-label={`${draft.file.name} coverage end`} type="date" value={classification.periodEnd ?? ""} onChange={(event) => onFileClassificationChange(index, { periodEnd: event.target.value || undefined })} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-2 text-xs font-normal disabled:bg-[#F4ECE4]" /></label>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">{draft.status === "needs-review" && <button type="button" onClick={() => onConfirmFileClassification(index)} className="min-h-11 rounded-xl bg-sage px-3 py-2 text-xs font-bold text-white hover:bg-[#477C55] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage focus-visible:ring-offset-2" aria-label={`Confirm classification for ${draft.file.name}`}>Confirm this file classification</button>}<button type="button" disabled={inspectingFileDrafts > 0} onClick={() => onRemoveFileDraft(index)} className="min-h-11 rounded-xl border border-line bg-white px-3 py-2 text-xs font-bold text-ink hover:bg-[#FFF1E8] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand" aria-label={`Remove unsaved file ${draft.file.name}`}>Remove file</button></div>
+          </fieldset>;
+        })}</div>
+      </section>}
+
+      <details className="mt-4 rounded-2xl border border-line bg-white"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-bold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"><span>Source link alternative</span><span className="text-muted">Owner-entered metadata</span></summary><div className="grid gap-3 border-t border-line p-3 lg:grid-cols-3"><label className="text-xs font-semibold text-ink">Evidence type<select value={upload.kind} onChange={(event) => onUploadChange("kind", event.target.value as EvidenceKind)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{EVIDENCE_KINDS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Source<select value={upload.source} onChange={(event) => onUploadChange("source", event.target.value as EvidenceSource)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal">{EVIDENCE_SOURCES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label className="text-xs font-semibold text-ink">Linked target<select value={`${upload.targetType}:${upload.targetId}`} onChange={(event) => { const [targetType, targetId] = event.target.value.split(":"); onUploadChange("targetType", targetType as EvidenceUploadDraft["targetType"]); onUploadChange("targetId", targetId); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="shop:shop">Entire shop</option>{state.listings.map((item) => <option key={item.id} value={`listing:${item.id}`}>{item.title} ({item.id})</option>)}{state.products.map((item) => <option key={item.id} value={`product:${item.id}`}>Product: {item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Coverage start<input type="date" value={upload.periodStart} onChange={(event) => onUploadChange("periodStart", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">Coverage end<input type="date" value={upload.periodEnd} onChange={(event) => onUploadChange("periodEnd", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink lg:col-span-3">Source link<input type="url" inputMode="url" placeholder="https://…" value={upload.sourceUrl} onChange={(event) => onUploadChange("sourceUrl", event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" aria-describedby="source-link-help" /><span id="source-link-help" className="mt-1 block font-normal text-muted">A source link is a separate alternative. Its metadata comes only from these explicit owner controls.</span></label></div></details>
+
+      <button type="button" onClick={onSaveUpload} disabled={fileDrafts.length > 0 && (readyFileDrafts === 0 || inspectingFileDrafts > 0)} className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-white hover:bg-[#D94F0D] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"><FileUp size={15} aria-hidden="true" />{fileDrafts.length ? inspectingFileDrafts ? "Wait for file classification" : `Save ${readyFileDrafts} ready file${readyFileDrafts === 1 ? "" : "s"}` : upload.sourceUrl.trim() ? "Save source link for review" : "Save local evidence for review"}</button>
+      {fileDrafts.length > 0 && ambiguousFileDrafts + intakeErrorDrafts > 0 && <p className="mt-2 text-[11px] leading-4 text-muted">Ready files can save now. The other {ambiguousFileDrafts + intakeErrorDrafts} file{ambiguousFileDrafts + intakeErrorDrafts === 1 ? "" : "s"} stay visible and unsaved until corrected or removed.</p>}
+      {batchItems.length > 0 && <section className="mt-4 rounded-2xl border border-line bg-[#FBF7F2] p-4" aria-label={failedBatchItems > 0 && savedBatchItems > 0 ? "Evidence batch partial error" : "Evidence batch progress"} aria-live="polite" data-evidence-state={failedBatchItems > 0 && savedBatchItems > 0 ? "partial-error" : completedBatchItems === batchItems.length ? "save-complete" : "saving"}>
+        <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold text-ink">Batch progress · {completedBatchItems}/{batchItems.length} complete</p><p className="text-xs font-semibold text-muted">{savedBatchItems} saved · {failedBatchItems} failed</p></div>
+        <progress className="mt-3 h-2 w-full accent-[#5C8C65]" max={batchItems.length} value={completedBatchItems}>{completedBatchItems} of {batchItems.length}</progress>
+        <ul className="mt-3 grid gap-2 sm:grid-cols-2">{batchItems.map((item) => <li key={`${item.index}-${item.fileName}`} className="min-w-0 rounded-xl border border-line bg-white p-3" aria-label={`${item.fileName}: ${item.status}`} data-evidence-state={item.status}><div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-xs font-bold text-ink">{item.fileName}</span><span className={`shrink-0 text-[10px] font-bold uppercase ${item.status === "saved" ? "text-sage" : item.status === "error" ? "text-brand" : "text-copper"}`}>{item.status}</span></div><p className="mt-1 break-words text-[11px] leading-4 text-muted">{item.detail}</p></li>)}</ul>
+      </section>}
+      <details className="mt-4 rounded-2xl border border-line bg-white"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-bold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"><span>Derived evidence inventory</span><span className="text-muted">{groups.length} groups · {conflictCount} conflicts</span></summary><div className="border-t border-line p-3"><dl className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4"><div aria-label="Duplicate evidence state" data-evidence-state="duplicate"><dt className="font-bold text-ink">Exact duplicates</dt><dd className="mt-1 text-muted">{duplicateCount} ignored after audit</dd></div><div aria-label="Conflict evidence state" data-evidence-state="conflict"><dt className="font-bold text-ink">Conflicts</dt><dd className="mt-1 text-muted">{conflictCount} block diagnosis</dd></div><div aria-label="Confirmed zero evidence state" data-evidence-state="confirmed-zero"><dt className="font-bold text-ink">Confirmed zero</dt><dd className="mt-1 text-muted">{confirmedZeroCount} valid zero metrics</dd></div><div aria-label="OCR needed evidence state" data-evidence-state="ocr-needed"><dt className="font-bold text-ink">OCR needed</dt><dd className="mt-1 text-muted">{ocrNeededCount} files need local review</dd></div><div aria-label="Protected listing state" data-evidence-state="protected"><dt className="font-bold text-ink">Protected</dt><dd className="mt-1 text-muted">{protectedCount} read-only listings</dd></div><div><dt className="font-bold text-ink">Unconfirmed</dt><dd className="mt-1 text-muted">{unconfirmedCount} visible, excluded</dd></div><div><dt className="font-bold text-ink">Stale by explicit policy</dt><dd className="mt-1 text-muted">{staleCount}; no automatic threshold</dd></div><div><dt className="font-bold text-ink">Dates / age</dt><dd className="mt-1 text-muted">Reported neutrally per group</dd></div></dl>{conflictCount > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand">{groups.flatMap((group) => group.conflicts.map((metric) => <li key={`${group.key}-${metric}`}>{group.kind} · {group.targetId} · {group.periodStart} → {group.periodEnd} · {metric}</li>))}</ul>}{groups.length > 0 && <ul className="mt-3 space-y-1 text-[11px] leading-4 text-muted" aria-label="Neutral evidence age inventory">{groups.map((group) => <li key={group.key}>{group.kind} · {group.targetId} · ends {group.periodEnd || "unknown"} · {group.ageDays === null ? "age unavailable" : `${group.ageDays} days old`}</li>)}</ul>}</div></details>
     </section>
 
     <section className="grid gap-3 sm:hidden" aria-label="Saved evidence">

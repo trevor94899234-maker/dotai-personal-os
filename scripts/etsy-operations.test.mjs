@@ -577,3 +577,144 @@ test("Delivery evidence proves downstream eligibility and truth recomputation", 
   console.log("eligible");
   console.log("truth");
 });
+
+test("Batch processor preserves empty, one-file, 20-image, and 50-workbook selections without truncation", async () => {
+  const { processEvidenceBatch } = await core();
+  const empty = await processEvidenceBatch([], async (file) => file.name);
+  assert.deepEqual(empty.items, []);
+
+  const one = await processEvidenceBatch([{ name: "one.csv", type: "text/csv" }], async (file) => file.name);
+  assert.equal(one.successes.length, 1);
+  assert.equal(one.items[0].status, "saved");
+
+  const images = Array.from({ length: 20 }, (_, index) => ({ name: `capture-${index + 1}.png`, type: "image/png" }));
+  const imageBatch = await processEvidenceBatch(images, async (file) => file.name);
+  assert.equal(imageBatch.items.length, 20);
+  assert.equal(imageBatch.successes.length, 20);
+  assert.equal(imageBatch.items.every((item) => item.status === "saved"), true);
+
+  const workbooks = Array.from({ length: 50 }, (_, index) => ({ name: `export-${index + 1}.xlsx`, type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  const workbookBatch = await processEvidenceBatch(workbooks, async (file) => file.name);
+  assert.equal(workbookBatch.items.length, 50);
+  assert.equal(workbookBatch.successes.length, 50);
+  assert.equal(workbookBatch.items.at(-1).detail, "Saved as a separate local evidence record.");
+});
+
+test("Batch processor keeps successful files when another file fails and reports every final outcome", async () => {
+  const { processEvidenceBatch } = await core();
+  const snapshots = [];
+  const files = [
+    { name: "good-1.csv", type: "text/csv" },
+    { name: "broken.xlsx", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    { name: "good-2.png", type: "image/png" },
+  ];
+  const result = await processEvidenceBatch(files, async (file) => {
+    if (file.name === "broken.xlsx") throw new Error("Workbook parse failed");
+    return file.name;
+  }, (items) => snapshots.push(items));
+  assert.deepEqual(result.successes.map((item) => item.file.name), ["good-1.csv", "good-2.png"]);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.items[1].status, "error");
+  assert.match(result.items[1].detail, /Workbook parse failed/);
+  assert.deepEqual(result.items.map((item) => item.status), ["saved", "error", "saved"]);
+  assert.equal(snapshots.at(-1).every((item) => item.status === "saved" || item.status === "error"), true);
+});
+
+test("One mixed dump classifies every file independently across kinds, sources, targets, and periods", async () => {
+  const { classifyEvidenceFile, isEvidenceFileClassificationReady } = await core();
+  const targets = [
+    { targetType: "shop", targetId: "shop", labels: ["entire shop", "shop stats"] },
+    { targetType: "listing", targetId: "4517034664", labels: ["4517034664", "Mom and Dad 2-Book Set"] },
+    { targetType: "listing", targetId: "4524703935", labels: ["4524703935", "Protected listing"] },
+    { targetType: "product", targetId: "product-standard-journal", labels: ["product-standard-journal", "Standard Journal"] },
+  ];
+  const fixtures = [
+    { name: "etsy-shop-stats-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Visits", "Orders"], expected: ["shop-stats", "etsy", "shop", "shop", "2026-08-01", "2026-08-20"] },
+    { name: "etsy-listing-performance-4517034664-2026-07-01_to_2026-07-31.csv", type: "text/csv", headers: ["Listing ID", "Views", "Favorites", "Orders"], expected: ["listing-performance", "etsy", "listing", "4517034664", "2026-07-01", "2026-07-31"] },
+    { name: "etsy-traffic-sources-4524703935-2026-06-01_to_2026-06-30.csv", type: "text/csv", headers: ["Traffic source", "Visits"], expected: ["traffic-sources", "etsy", "listing", "4524703935", "2026-06-01", "2026-06-30"] },
+    { name: "erank-keyword-research-product-standard-journal-2026-08-10.csv", type: "text/csv", headers: ["Keyword", "Searches", "Competition"], expected: ["keyword-research", "erank", "product", "product-standard-journal", "2026-08-10", "2026-08-10"] },
+  ];
+  const classifications = fixtures.map((fixture) => classifyEvidenceFile({ ...fixture, targets }));
+  assert.deepEqual(classifications.map((item) => [item.kind, item.source, item.targetType, item.targetId, item.periodStart, item.periodEnd]), fixtures.map((fixture) => fixture.expected));
+  assert.equal(classifications.every(isEvidenceFileClassificationReady), true);
+  assert.equal(new Set(classifications.map((item) => `${item.source}|${item.kind}|${item.targetType}|${item.targetId}|${item.periodStart}|${item.periodEnd}`)).size, 4, "metadata must not bleed between files");
+});
+
+test("Ambiguous mixed-signal files stay provisional while valid siblings remain independently ready", async () => {
+  const { classifyEvidenceFile, isEvidenceFileClassificationReady } = await core();
+  const targets = [
+    { targetType: "shop", targetId: "shop", labels: ["entire shop", "shop stats"] },
+    { targetType: "listing", targetId: "4517034664", labels: ["4517034664"] },
+  ];
+  const valid = classifyEvidenceFile({ name: "etsy-listing-performance-4517034664-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Listing ID", "Views", "Orders"], targets });
+  const ambiguous = classifyEvidenceFile({ name: "etsy-erank-traffic-sources-keyword-research-4517034664-2026-08-01_to_2026-08-20.csv", type: "text/csv", headers: ["Keyword", "Searches", "Traffic source"], targets });
+  const screenshot = classifyEvidenceFile({ name: "etsy-shop-stats-2026-08-01_to_2026-08-20.png", type: "image/png", targets });
+  assert.equal(isEvidenceFileClassificationReady(valid), true);
+  assert.equal(isEvidenceFileClassificationReady(screenshot), true, "a filename may classify screenshot lineage, but it does not create OCR or numeric truth");
+  assert.equal(isEvidenceFileClassificationReady(ambiguous), false);
+  assert.equal(ambiguous.status, "ambiguous");
+  assert.equal(ambiguous.source, undefined, "conflicting Etsy/eRank signals must not silently choose a source");
+  assert.equal(ambiguous.kind, undefined, "conflicting traffic/keyword signals must not silently choose a kind");
+  assert.ok(ambiguous.ambiguity.includes("source"));
+  assert.ok(ambiguous.ambiguity.includes("kind"));
+});
+
+test("Derived groups canonicalize labels, use exact duplicates once, and keep complementary metrics auditable", async () => {
+  const { deriveEvidenceGroups } = await core();
+  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
+  const artifacts = [
+    { ...common, id: "views-a", fileName: "views-a.csv", metrics: [{ label: "Listing Views", value: 12, status: "confirmed" }] },
+    { ...common, id: "views-b", fileName: "views-b.csv", metrics: [{ label: "views", value: 12, status: "confirmed" }] },
+    { ...common, id: "orders", fileName: "orders.csv", metrics: [{ label: "Orders", value: 2, status: "confirmed" }] },
+  ];
+  const [group] = deriveEvidenceGroups(artifacts, { asOf: "2026-08-23" });
+  assert.equal(group.metrics.length, 2);
+  assert.deepEqual(group.metrics.map((metric) => metric.canonicalLabel), ["orders", "views"]);
+  const views = group.metrics.find((metric) => metric.canonicalLabel === "views");
+  assert.equal(views.value, 12, "cross-file totals must not be summed to 24");
+  assert.equal(views.status, "confirmed");
+  assert.deepEqual(views.artifactIds, ["views-a", "views-b"]);
+  assert.deepEqual(views.duplicateArtifactIds, ["views-b"]);
+  assert.deepEqual(group.duplicateArtifactIds, ["views-b"]);
+  assert.equal(group.conflicts.length, 0);
+});
+
+test("Derived groups surface value or truth-status conflicts while excluding unconfirmed files", async () => {
+  const { deriveEvidenceGroups } = await core();
+  const common = { kind: "listing-performance", source: "etsy", authority: "primary", mimeType: "text/csv", uploadedAt: "2026-08-20T00:00:00.000Z", periodStart: "2026-08-01", periodEnd: "2026-08-20", targetType: "listing", targetId: "4517034664", ocrStatus: "not-needed", rows: 1, headers: [], contentText: "" };
+  const artifact = (id, value, status, ownerConfirmed = true) => ({ ...common, id, fileName: `${id}.csv`, ownerConfirmed, metrics: [{ label: "Views", value, status }] });
+  let [group] = deriveEvidenceGroups([artifact("confirmed", 10, "confirmed"), artifact("unconfirmed", 999, "confirmed", false)], { asOf: "2026-08-23" });
+  assert.equal(group.metrics[0].value, 10);
+  assert.equal(group.metrics[0].status, "confirmed");
+  assert.deepEqual(group.unconfirmedArtifactIds, ["unconfirmed"]);
+  assert.deepEqual(group.conflicts, []);
+
+  [group] = deriveEvidenceGroups([artifact("left", 10, "confirmed"), artifact("right", 11, "confirmed")], { asOf: "2026-08-23" });
+  assert.equal(group.metrics[0].status, "conflict");
+  assert.deepEqual(group.conflicts, ["views"]);
+
+  [group] = deriveEvidenceGroups([artifact("zero-a", 0, "confirmed-zero"), artifact("zero-b", 0, "confirmed")], { asOf: "2026-08-23" });
+  assert.equal(group.metrics[0].status, "conflict", "different truth statuses conflict even when the numeric value matches");
+});
+
+test("Derived grouping never bleeds across source, kind, target, or period; age is neutral unless owner configures staleness", async () => {
+  const { deriveEvidenceGroups, isEvidencePeriodStale } = await core();
+  const base = { source: "etsy", authority: "primary", fileName: "evidence.png", mimeType: "image/png", uploadedAt: "2026-06-02T00:00:00.000Z", periodStart: "2026-06-01", periodEnd: "2026-06-01", targetType: "listing", targetId: "4517034664", ownerConfirmed: true, ocrStatus: "unreadable", rows: null, headers: [], metrics: [{ label: "Views", value: 3, status: "confirmed" }], contentText: "" };
+  const artifacts = [
+    { ...base, id: "old-ocr", kind: "listing-performance" },
+    { ...base, id: "other-period", kind: "listing-performance", periodStart: "2026-08-01", periodEnd: "2026-08-01" },
+    { ...base, id: "other-target", kind: "listing-performance", targetId: "4524703935" },
+    { ...base, id: "other-kind", kind: "traffic-sources" },
+    { ...base, id: "other-source", kind: "listing-performance", source: "owner", authority: "inference" },
+  ];
+  const groups = deriveEvidenceGroups(artifacts, { asOf: "2026-08-23" });
+  assert.equal(groups.length, 5);
+  const old = groups.find((group) => group.artifactIds.includes("old-ocr"));
+  assert.equal(old.stale, false, "age alone must not invent a stale decision policy");
+  assert.equal(old.ageDays, 83);
+  assert.equal(isEvidencePeriodStale("2026-06-01", "2026-08-23"), false);
+  assert.deepEqual(old.ocrReviewOnlyArtifactIds, ["old-ocr"]);
+  assert.equal(old.metrics.length, 0, "unreadable OCR metrics stay excluded from conclusions");
+  const explicitlyConfigured = deriveEvidenceGroups(artifacts, { asOf: "2026-08-23", staleAfterDays: 30 }).find((group) => group.artifactIds.includes("old-ocr"));
+  assert.equal(explicitlyConfigured.stale, true, "only explicit owner-configured input may assert stale");
+});

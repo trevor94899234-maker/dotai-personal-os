@@ -135,3 +135,49 @@ test("Growth Radar integration produces an owner-export manifest and High confid
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("Evidence Intake exposes one native multi-file selection with truthful batch and per-file status", async () => {
+  const stepper = await readFile(fileURLToPath(new URL("../src/components/EvidenceIntakeStepper.tsx", import.meta.url)), "utf8");
+  const hub = await readFile(fileURLToPath(new URL("../src/components/EtsyOperationsHub.tsx", import.meta.url)), "utf8");
+  const operations = await readFile(fileURLToPath(new URL("../src/lib/etsyOperations.ts", import.meta.url)), "utf8");
+  assert.match(stepper, /type="file" multiple accept="\.csv,\.tsv,\.xlsx,\.xls,image\/png,image\/jpeg"/);
+  assert.match(stepper, /aria-label="Mixed evidence file inventory"/);
+  assert.match(stepper, /Evidence batch partial error/);
+  assert.match(stepper, /<progress[^>]+max=\{batchItems\.length\}[^>]+value=\{completedBatchItems\}/);
+  for (const status of ["queued", "processing", "saved", "error"]) assert.ok(operations.includes(`"${status}"`), `missing ${status} batch state`);
+  assert.match(stepper, /failedBatchItems/);
+  assert.match(stepper, /Derived evidence inventory/);
+  assert.match(hub, /artifacts: \[\.\.\.artifacts, \.\.\.state\.artifacts\]/);
+  assert.match(hub, /Valid files remain visible and are not erased by a failed file/);
+});
+
+test("Mixed intake exposes native per-file correction controls and browser-testable safety states", async () => {
+  const stepper = await readFile(fileURLToPath(new URL("../src/components/EvidenceIntakeStepper.tsx", import.meta.url)), "utf8");
+  const hub = await readFile(fileURLToPath(new URL("../src/components/EtsyOperationsHub.tsx", import.meta.url)), "utf8");
+  const card = await readFile(fileURLToPath(new URL("../src/components/CoachDiagnosisCard.tsx", import.meta.url)), "utf8");
+  assert.match(stepper, /<fieldset[^>]+aria-label=\{`Classification for \$\{draft\.file\.name\}`\}/);
+  for (const accessibleField of ["evidence type", "evidence source", "linked target", "coverage start", "coverage end"]) assert.ok(stepper.includes(`${accessibleField}\`}`), `missing per-file accessible ${accessibleField}`);
+  assert.match(stepper, /Confirm this file classification/);
+  assert.match(stepper, /data-evidence-state=\{draft\.status\}/);
+  assert.match(stepper, /data-ocr-state=\{draft\.mimeType\.startsWith\("image\/"\) \? "ocr-needed-after-save"/);
+  for (const state of ["partial-error", "duplicate", "conflict", "confirmed-zero", "ocr-needed", "protected"]) assert.ok(stepper.includes(`"${state}"`), `missing browser-testable ${state} state`);
+  assert.match(card, /aria-label="Completed coach diagnosis"/);
+  assert.match(card, /data-coach-state="completed-diagnosis"/);
+  assert.ok(card.includes('aria-label={`${diagnosis.nextAction.label}. ${diagnosis.nextAction.detail}`}'), "Coach action needs a reliable accessible name");
+  assert.match(hub, /readyDrafts = fileDrafts\.filter/);
+  assert.match(hub, /ownerConfirmed: false/);
+  assert.match(hub, /ocrStatus: isImage \? "pending"/);
+  assert.match(hub, /remainingDrafts = fileDrafts/);
+});
+
+test("No automatic stale threshold or shared batch metadata can enter file artifacts", async () => {
+  const hub = await readFile(fileURLToPath(new URL("../src/components/EtsyOperationsHub.tsx", import.meta.url)), "utf8");
+  const operations = await readFile(fileURLToPath(new URL("../src/lib/etsyOperations.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(operations, /staleAfterDays\s*=\s*30|staleAfterDays\s*\?\?\s*30/);
+  assert.match(operations, /staleAfterDays === undefined/);
+  assert.match(hub, /kind: classification\.kind!/);
+  assert.match(hub, /source: classification\.source!/);
+  assert.match(hub, /targetId: classification\.targetId!/);
+  assert.match(hub, /periodStart: classification\.periodStart!/);
+  assert.doesNotMatch(hub, /kind: upload\.kind,[\s\S]{0,500}fileName: file\.name/);
+});
