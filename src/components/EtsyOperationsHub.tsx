@@ -27,6 +27,7 @@ import {
   hydrateKnownDesigns,
   hydrateKnownProducts,
   hydrateKeywordResearch,
+  inferDesignSuggestion,
   legacyMigration,
   listingBriefMissing,
   loadOperationsState,
@@ -105,6 +106,25 @@ function loadActiveDesignId() {
 }
 
 function dataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); }); }
+async function prepareDesignImage(file: File) {
+  const originalDataUrl = await dataUrl(file);
+  const image = document.createElement("img");
+  image.decoding = "async";
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("This image could not be opened."));
+    image.src = originalDataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("This browser could not prepare the image for local analysis.");
+  context.fillStyle = "#FFFFFF";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0);
+  return { originalDataUrl, ocrDataUrl: canvas.toDataURL("image/png") };
+}
 function evidenceMimeType(file: File) {
   const isImage = file.type.startsWith("image/") || /\.(png|jpe?g)$/i.test(file.name);
   return file.type || (isImage
@@ -157,9 +177,11 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const [fileDrafts, setFileDrafts] = useState<EvidenceUploadFileDraft[]>([]);
   const [batchItems, setBatchItems] = useState<EvidenceBatchItem[]>([]);
   const classificationRunRef = useRef(0);
+  const designAnalysisRunRef = useRef(0);
   const [reviewArtifactId, setReviewArtifactId] = useState<string | null>(null);
   const [product, setProduct] = useState(EMPTY_PRODUCT);
   const [design, setDesign] = useState(EMPTY_DESIGN);
+  const [designAnalysisStatus, setDesignAnalysisStatus] = useState<"idle" | "analysing" | "ready" | "fallback">("idle");
   const [post, setPost] = useState(EMPTY_POST);
   const [listingStudio, setListingStudio] = useState({ productId: "", designId: "", positioning: "", seeds: "", tags: "", packageText: "" });
 
@@ -300,6 +322,59 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   }
   const updateProduct = <K extends keyof Omit<Product, "id">>(key: K, value: Omit<Product, "id">[K]) => setProduct((current) => ({ ...current, [key]: value }));
   const updateDesign = <K extends keyof Omit<Design, "id">>(key: K, value: Omit<Design, "id">[K]) => setDesign((current) => ({ ...current, [key]: value }));
+  async function analyseDesignFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/") && !/\.(?:png|jpe?g|webp)$/i.test(file.name)) {
+      showToast("Choose a PNG, JPG or WebP design file.");
+      event.target.value = "";
+      return;
+    }
+    const analysisRun = ++designAnalysisRunRef.current;
+    const safeSuggestion = inferDesignSuggestion(file.name, "");
+    setDesign((current) => ({
+      ...EMPTY_DESIGN,
+      productId: current.productId,
+      name: safeSuggestion.name,
+      recipient: safeSuggestion.recipient,
+      occasion: safeSuggestion.occasion,
+      assetName: file.name,
+      analysisBasis: "safe-default",
+    }));
+    setDesignAnalysisStatus("analysing");
+    showToast("Preparing a white-background preview and reading this design locally…");
+    let worker: Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>> | null = null;
+    try {
+      const prepared = await prepareDesignImage(file);
+      if (analysisRun !== designAnalysisRunRef.current) return;
+      setDesign((current) => ({ ...current, previewDataUrl: prepared.originalDataUrl }));
+      const { createWorker } = await import("tesseract.js");
+      worker = await createWorker("eng");
+      const result = await worker.recognize(prepared.ocrDataUrl);
+      const suggestion = inferDesignSuggestion(file.name, result.data.text);
+      if (analysisRun !== designAnalysisRunRef.current) return;
+      setDesign((current) => ({
+        ...current,
+        name: suggestion.name,
+        recipient: suggestion.recipient,
+        occasion: suggestion.occasion,
+        assetName: file.name,
+        previewDataUrl: prepared.originalDataUrl,
+        analysisText: suggestion.detectedText,
+        analysisBasis: suggestion.basis,
+        sourceNote: suggestion.detectedText ? `Local OCR suggestion: ${suggestion.detectedText.slice(0, 500)}` : "Local safe defaults; no readable message text.",
+      }));
+      setDesignAnalysisStatus(suggestion.basis === "local-ocr" ? "ready" : "fallback");
+      showToast(suggestion.basis === "local-ocr" ? "Local analysis filled the design details. Choose only the product to continue." : "No readable message text was found. Safe defaults were filled; choose only the product to continue.");
+    } catch {
+      if (analysisRun !== designAnalysisRunRef.current) return;
+      setDesign((current) => ({ ...current, sourceNote: "Local analysis was unavailable; safe defaults were applied." }));
+      setDesignAnalysisStatus("fallback");
+      showToast("Local OCR was unavailable. Safe defaults were filled; choose only the product to continue.");
+    } finally {
+      if (worker) await worker.terminate();
+    }
+  }
   function chooseActiveDesign(nextDesignId: string) {
     if (!nextDesignId) return;
     setActiveDesignId(nextDesignId);
@@ -446,7 +521,18 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   }
   async function removeArtifact(id: string) { if (!state || !window.confirm("Remove this local dashboard copy? Your original file is not deleted.")) return; if (reviewArtifactId === id) setReviewArtifactId(null); await commit({ ...state, artifacts: state.artifacts.filter((item) => item.id !== id) }, "Local dashboard copy removed. Original source file was not changed."); }
   async function addProduct() { if (!state || !product.name.trim()) { showToast("Give the product a name before adding it."); return; } const next = { ...state, products: [...state.products, { ...product, id: createId("product"), factsStatus: "baseline" as const }] }; await commit(next, "Product card saved. Link a design to continue."); setProduct(EMPTY_PRODUCT); }
-  async function addDesign() { if (!state || !design.name.trim() || !design.productId) { showToast("Choose a product and give this design a name."); return; } await commit({ ...state, designs: [...state.designs, { ...design, id: createId("design") }] }, "Design linked to product. Add keyword research before preparing a listing brief."); setDesign(EMPTY_DESIGN); }
+  async function addDesign() {
+    if (!state || !design.previewDataUrl) { showToast("Choose one design image first; the dashboard will fill the details."); return; }
+    if (designAnalysisStatus === "analysing") { showToast("Local design analysis is still running."); return; }
+    if (!design.productId) { showToast("Choose the product this design applies to. This is the only owner choice required."); return; }
+    const newDesign = { ...design, id: createId("design") };
+    await commit({ ...state, designs: [...state.designs, newDesign] }, "Design saved with local suggestions. Research is ready for this same design.");
+    setActiveDesignId(newDesign.id);
+    setWorkMode("product-development");
+    setOperationsTab("research");
+    setDesign(EMPTY_DESIGN);
+    setDesignAnalysisStatus("idle");
+  }
   async function addPost() { if (!state || !post.contentId.trim() || !post.listingId || !post.publishedOn) { showToast("Content ID, target listing and publish date are required for traceable social tracking."); return; } await commit({ ...state, posts: [{ ...post, id: createId("post") }, ...state.posts] }, "Social post saved. Platform metrics are context until Etsy attribution is confirmed."); setPost(EMPTY_POST); }
   async function saveListingDraft() {
     if (!state || !listingStudio.productId || !listingStudio.designId || !listingStudio.packageText.trim()) { showToast("Choose the product and design, then paste the complete Codex listing draft before saving."); return; }
@@ -910,7 +996,61 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       <article className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><FileDown size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Evidence health</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">What the dashboard can safely use</h3><dl className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">All artifacts</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.artifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Confirmed</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{eligibleArtifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Products</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.products.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Designs</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.designs.length}</dd></div></dl><p className="mt-4 text-xs leading-5 text-muted">Primary = Etsy or a platform’s own export. eRank/EverBee are supplemental. Cross-platform attribution remains an inference unless a tracked source confirms it.</p></article>
     </section>
 
-    <section hidden={operationsTab !== "library"} style={{ display: operationsTab === "library" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-brand"><LibraryBig size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Product + Design Library</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Keep product truth attached to every design</h3><div className="mt-5 grid gap-5 xl:grid-cols-2"><div className="rounded-2xl border border-line bg-[#FBF7F2] p-4"><h4 className="font-bold text-ink">Add product</h4><div className="mt-3 grid gap-3 sm:grid-cols-2">{(["name", "type", "material", "size", "productionMethod", "fulfilmentSource", "costSource", "allowedClaims", "blockedClaims"] as const).map((key) => <label key={key} className="text-[11px] font-semibold capitalize text-muted">{key.replace(/([A-Z])/g, " $1")}<input value={product[key]} onChange={(event) => updateProduct(key, event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label>)}</div><button type="button" onClick={() => void addProduct()} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand"><Plus size={14} />Add product</button></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-4"><h4 className="font-bold text-ink">Add design</h4><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-[11px] font-semibold text-muted">Design name<input value={design.name} onChange={(event) => updateDesign("name", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label><label className="text-[11px] font-semibold text-muted">Product<select value={design.productId} onChange={(event) => updateDesign("productId", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink"><option value="">Select product</option>{state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-[11px] font-semibold text-muted">Recipient<input value={design.recipient} onChange={(event) => updateDesign("recipient", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label><label className="text-[11px] font-semibold text-muted">Occasion<input value={design.occasion} onChange={(event) => updateDesign("occasion", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label><label className="text-[11px] font-semibold text-muted">Asset / preview name<input value={design.assetName} onChange={(event) => updateDesign("assetName", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label><label className="text-[11px] font-semibold text-muted">Mockup status<select value={design.mockupStatus} onChange={(event) => updateDesign("mockupStatus", event.target.value as Design["mockupStatus"])} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink"><option value="missing">Missing</option><option value="ready">Ready</option></select></label></div><button type="button" onClick={() => void addDesign()} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand"><Image size={14} />Add design</button></div></div><div className="mt-5 grid gap-3 md:grid-cols-2">{state.products.map((item) => <article key={item.id} className="rounded-2xl border border-line bg-white p-4"><div className="font-bold text-ink">{item.name}</div><div className="mt-1 text-xs text-muted">{item.type} · {item.material || "material missing"} · {item.productionMethod || "production method missing"}</div><div className="mt-2 text-xs text-copper">Cost: {item.costSource || "missing"} · Fulfilment: {item.fulfilmentSource || "missing"}</div></article>)}{state.products.length === 0 && <p className="text-sm text-muted">No product cards yet. Add real product facts before starting a new listing.</p>}</div></section>
+    <section hidden={operationsTab !== "library"} style={{ display: operationsTab === "library" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6">
+      <div className="flex items-center gap-2 text-brand"><LibraryBig size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Product + Design Library</span></div>
+      <h3 className="mt-2 font-display text-2xl font-bold text-ink">Keep product truth attached to every design</h3>
+      <div className="mt-5 grid gap-5 xl:grid-cols-2">
+        <div className="rounded-2xl border border-line bg-[#FBF7F2] p-4">
+          <h4 className="font-bold text-ink">Add product</h4>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">{(["name", "type", "material", "size", "productionMethod", "fulfilmentSource", "costSource", "allowedClaims", "blockedClaims"] as const).map((key) => <label key={key} className="text-[11px] font-semibold capitalize text-muted">{key.replace(/([A-Z])/g, " $1")}<input value={product[key]} onChange={(event) => updateProduct(key, event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-ink" /></label>)}</div>
+          <button type="button" onClick={() => void addProduct()} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand"><Plus size={14} />Add product</button>
+        </div>
+        <div className="rounded-2xl border border-line bg-[#FBF7F2] p-4" aria-label="Automatic design intake">
+          <h4 className="font-bold text-ink">Add design</h4>
+          <p className="mt-1 text-xs leading-5 text-muted">Choose one image. The dashboard prepares a white-background preview, reads the message locally and fills the design details. You only choose the product.</p>
+          <label className="mt-3 block text-[11px] font-semibold text-muted">1. Design file
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void analyseDesignFile(event)} className="mt-1 block w-full rounded-xl border border-dashed border-brand/35 bg-white px-3 py-3 text-sm font-normal text-ink file:mr-3 file:rounded-lg file:border-0 file:bg-[#FFF1E8] file:px-3 file:py-2 file:text-xs file:font-bold file:text-brand" />
+          </label>
+          {design.previewDataUrl && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-[132px_1fr]">
+              <div className="flex min-h-44 items-center justify-center overflow-hidden rounded-xl border border-line bg-white p-2">
+                <img src={design.previewDataUrl} alt={`Local preview for ${design.name || design.assetName}`} className="max-h-52 w-full object-contain" />
+              </div>
+              <div className="rounded-xl border border-line bg-white p-3" aria-live="polite">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-brand">Auto-filled suggestion</span>
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${designAnalysisStatus === "ready" ? "bg-[#E8F0E6] text-sage" : "bg-[#FFF1E8] text-brand"}`}>{designAnalysisStatus === "analysing" ? "Reading locally…" : designAnalysisStatus === "ready" ? "Local OCR ready" : "Safe defaults"}</span>
+                </div>
+                <dl className="mt-3 grid gap-2 text-xs">
+                  <div><dt className="text-muted">Design name</dt><dd className="font-semibold text-ink">{design.name}</dd></div>
+                  <div><dt className="text-muted">Recipient</dt><dd className="font-semibold text-ink">{design.recipient}</dd></div>
+                  <div><dt className="text-muted">Occasion</dt><dd className="font-semibold text-ink">{design.occasion}</dd></div>
+                </dl>
+                {design.analysisText && <p className="mt-3 line-clamp-3 rounded-lg bg-[#FBF7F2] p-2 text-[11px] leading-4 text-muted">Detected message: {design.analysisText}</p>}
+              </div>
+            </div>
+          )}
+          <label className="mt-3 block text-[11px] font-semibold text-muted">2. Product — the only choice required
+            <select value={design.productId} onChange={(event) => updateDesign("productId", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal text-ink">
+              <option value="">Choose the product this design applies to</option>
+              {state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          {design.previewDataUrl && (
+            <details className="mt-3 rounded-xl border border-line bg-white">
+              <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-bold text-muted">Adjust the suggestion only if needed</summary>
+              <div className="grid gap-3 border-t border-line p-3 sm:grid-cols-2">
+                <label className="text-[11px] font-semibold text-muted">Design name<input value={design.name} onChange={(event) => updateDesign("name", event.target.value)} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal text-ink" /></label>
+                <label className="text-[11px] font-semibold text-muted">Recipient<input value={design.recipient} onChange={(event) => updateDesign("recipient", event.target.value)} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal text-ink" /></label>
+                <label className="text-[11px] font-semibold text-muted">Occasion<input value={design.occasion} onChange={(event) => updateDesign("occasion", event.target.value)} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal text-ink" /></label>
+              </div>
+            </details>
+          )}
+          <button type="button" onClick={() => void addDesign()} disabled={!design.previewDataUrl || !design.productId || designAnalysisStatus === "analysing"} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand disabled:cursor-not-allowed disabled:opacity-45"><Image size={14} />Save design and continue to Research</button>
+        </div>
+      </div>
+      <div className="mt-5 grid gap-3 md:grid-cols-2">{state.products.map((item) => <article key={item.id} className="rounded-2xl border border-line bg-white p-4"><div className="font-bold text-ink">{item.name}</div><div className="mt-1 text-xs text-muted">{item.type} · {item.material || "material missing"} · {item.productionMethod || "production method missing"}</div><div className="mt-2 text-xs text-copper">Cost: {item.costSource || "missing"} · Fulfilment: {item.fulfilmentSource || "missing"}</div></article>)}{state.products.length === 0 && <p className="text-sm text-muted">No product cards yet. Add real product facts before starting a new listing.</p>}</div>
+    </section>
 
     <section hidden={operationsTab !== "results"} style={{ display: operationsTab === "results" ? undefined : "none" }} className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><Sparkles size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">New Listing Studio</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Build a research-ready brief, then ask Codex to draft</h3><div className="mt-5 grid gap-3 lg:grid-cols-2"><label className="text-xs font-semibold text-ink">Product<select value={listingStudio.productId} onChange={(event) => setListingStudio((current) => ({ ...current, productId: event.target.value, designId: "" }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select product</option>{state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Design<select value={listingStudio.designId} onChange={(event) => { setListingStudio((current) => ({ ...current, designId: event.target.value })); chooseActiveDesign(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select linked design</option>{state.designs.filter((item) => item.productId === listingStudio.productId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink lg:col-span-2">Positioning / gift promise<textarea value={listingStudio.positioning} onChange={(event) => setListingStudio((current) => ({ ...current, positioning: event.target.value }))} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Who is it for, what occasion, and why this product?" /></label><label className="text-xs font-semibold text-ink lg:col-span-2">5–15 seed keywords<textarea value={listingStudio.seeds} onChange={(event) => setListingStudio((current) => ({ ...current, seeds: event.target.value }))} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Comma-separated seed keywords for eRank, EverBee or Etsy Marketplace Insights research" /></label></div><div className={`mt-4 rounded-2xl border p-4 ${studioGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{studioGaps.length ? "Draft blocked until evidence is complete" : "Ready for a Codex draft package"}</div>{studioGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{studioGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">Copy the brief to Codex; its title, tags, description and social copy remain draft-only.</p>}</div><button type="button" onClick={() => void copy(listingPacket(), studioGaps.length ? "Blocked listing brief copied with its exact missing inputs." : "New listing brief copied for Codex draft generation.")} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Clipboard size={15} />Copy Listing Brief</button></section>
 

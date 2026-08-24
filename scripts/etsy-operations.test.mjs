@@ -392,6 +392,29 @@ test("Actual workspace is the canonical Etsy entry point and legacy actions rout
   assert.doesNotMatch(source, /onClick=\{\(\) => choose\(/);
 });
 
+test("Design intake infers recipient and occasion while keeping the asset code as its name", async () => {
+  const { inferDesignSuggestion } = await core();
+  const suggestion = inferDesignSuggestion("MD-1435.psd 的複本.png", "To my beautiful daughter, I love you more every day. Happy birthday!");
+  assert.deepEqual(suggestion, {
+    name: "MD-1435",
+    recipient: "Daughter",
+    occasion: "Birthday",
+    detectedText: "To my beautiful daughter, I love you more every day. Happy birthday!",
+    basis: "local-ocr",
+  });
+});
+
+test("Design intake supplies safe defaults when local OCR cannot read the artwork", async () => {
+  const { inferDesignSuggestion } = await core();
+  assert.deepEqual(inferDesignSuggestion("MD-1435.psd 的複本.png", ""), {
+    name: "MD-1435",
+    recipient: "Gift recipient",
+    occasion: "Everyday appreciation",
+    detectedText: "",
+    basis: "safe-default",
+  });
+});
+
 test("Dashboard starts from two explicit routes and persists one shared working context", async () => {
   const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
   const research = await readFile(join(PROJECT_ROOT, "src", "components", "KeywordResearchWorkspace.tsx"), "utf8");
@@ -402,6 +425,22 @@ test("Dashboard starts from two explicit routes and persists one shared working 
   assert.match(hub, /KeywordResearchWorkspace selectedDesignId=\{activeDesignId\} onSelectDesign=\{chooseActiveDesign\}/);
   assert.match(research, /controlledDesignId \?\? localDesignId/);
   assert.doesNotMatch(research, /const \[selectedDesignId, setSelectedDesignId\]/);
+});
+
+test("Design intake makes product the only required owner choice after local analysis", async () => {
+  const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
+  for (const contract of [
+    "Automatic design intake",
+    "prepareDesignImage",
+    "createWorker(\"eng\")",
+    "2. Product — the only choice required",
+    "Save design and continue to Research",
+    "Adjust the suggestion only if needed",
+  ]) assert.ok(hub.includes(contract), `missing automatic design intake contract: ${contract}`);
+  assert.match(hub, /type="file" accept="image\/png,image\/jpeg,image\/webp"/);
+  assert.match(hub, /context\.fillStyle = "#FFFFFF"/);
+  assert.match(hub, /setOperationsTab\("research"\)/);
+  assert.match(hub, /previewDataUrl: prepared\.originalDataUrl/);
 });
 
 test("Demo hydration seeds only empty collections and preserves existing owner records", async () => {

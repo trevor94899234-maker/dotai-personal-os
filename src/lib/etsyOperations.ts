@@ -338,7 +338,75 @@ export type Product = {
   factsConfirmedAt?: string;
 };
 
-export type Design = { id: string; name: string; productId: string; recipient: string; occasion: string; mockupStatus: "missing" | "ready"; assetName: string; sourceNote?: string };
+export type Design = {
+  id: string;
+  name: string;
+  productId: string;
+  recipient: string;
+  occasion: string;
+  mockupStatus: "missing" | "ready";
+  assetName: string;
+  sourceNote?: string;
+  previewDataUrl?: string;
+  analysisText?: string;
+  analysisBasis?: "local-ocr" | "safe-default";
+};
+
+export type DesignSuggestion = {
+  name: string;
+  recipient: string;
+  occasion: string;
+  detectedText: string;
+  basis: "local-ocr" | "safe-default";
+};
+
+const DESIGN_RECIPIENT_RULES: Array<[RegExp, string]> = [
+  [/\bgranddaughter\b|孫女/i, "Granddaughter"],
+  [/\bgrandson\b|孫仔|孫兒/i, "Grandson"],
+  [/\bdaughter(?:\s+in\s+law)?\b|女兒|媳婦/i, "Daughter"],
+  [/\bson(?:\s+in\s+law)?\b|兒子|女婿/i, "Son"],
+  [/\bwife\b|太太|妻子/i, "Wife"],
+  [/\bhusband\b|老公|丈夫/i, "Husband"],
+  [/\bmom\b|\bmum\b|\bmother\b|媽媽|母親/i, "Mom"],
+  [/\bdad\b|\bfather\b|爸爸|父親/i, "Dad"],
+  [/\bsister\b|姊妹|姐姐|妹妹/i, "Sister"],
+  [/\bbrother\b|兄弟|哥哥|弟弟/i, "Brother"],
+  [/\bbest\s+friend\b|\bfriend\b|朋友/i, "Friend"],
+  [/\bsoulmate\b|\bpartner\b|伴侶/i, "Partner"],
+];
+
+const DESIGN_OCCASION_RULES: Array<[RegExp, string]> = [
+  [/mother'?s\s+day|母親節/i, "Mother's Day"],
+  [/father'?s\s+day|父親節/i, "Father's Day"],
+  [/valentine'?s\s+day|情人節/i, "Valentine's Day"],
+  [/\bbirthday\b|生日/i, "Birthday"],
+  [/\banniversary\b|周年|週年/i, "Anniversary"],
+  [/\bwedding\b|結婚|婚禮/i, "Wedding"],
+  [/\bgraduation\b|畢業/i, "Graduation"],
+  [/\bchristmas\b|聖誕/i, "Christmas"],
+  [/\bretirement\b|退休/i, "Retirement"],
+  [/\bmemorial\b|\bin memory of\b|紀念/i, "Memorial"],
+];
+
+function designNameFromFile(fileName: string) {
+  const withoutImageExtension = fileName.replace(/\.(?:png|jpe?g|webp)$/i, "");
+  const withoutCopySuffix = withoutImageExtension.replace(/\s+(?:的複本|copy(?:\s*\(\d+\))?)$/i, "");
+  return withoutCopySuffix.replace(/\.psd$/i, "").trim() || "Untitled design";
+}
+
+export function inferDesignSuggestion(fileName: string, ocrText: string): DesignSuggestion {
+  const detectedText = ocrText.replace(/\s+/g, " ").trim().slice(0, 1200);
+  const searchable = detectedText || designNameFromFile(fileName);
+  const recipient = DESIGN_RECIPIENT_RULES.find(([pattern]) => pattern.test(searchable))?.[1] ?? "Gift recipient";
+  const occasion = DESIGN_OCCASION_RULES.find(([pattern]) => pattern.test(searchable))?.[1] ?? "Everyday appreciation";
+  return {
+    name: designNameFromFile(fileName),
+    recipient,
+    occasion,
+    detectedText,
+    basis: detectedText ? "local-ocr" : "safe-default",
+  };
+}
 export type Listing = { id: string; title: string; protected: boolean; observationEnd?: string };
 export type SellerDecisionMetric = { label: string; value: number | null; status: MetricStatus };
 export type SellerMaintenanceRule = {
