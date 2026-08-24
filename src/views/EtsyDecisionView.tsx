@@ -744,7 +744,7 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
             </span>
           </div>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <h2 className="font-display text-2xl font-bold">一個任務，六位員工接力</h2>
+            <h2 className="font-display text-2xl font-bold">一個任務，{crew.length} 位員工接力</h2>
             {onOpenOffice && (
               <button
                 type="button"

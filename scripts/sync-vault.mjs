@@ -16,7 +16,7 @@
  */
 
 import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
-import { join, dirname, basename, relative } from "node:path";
+import { join, dirname, basename, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fg from "fast-glob";
 import matter from "gray-matter";
@@ -24,7 +24,7 @@ import matter from "gray-matter";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const VAULT_DIR = process.env.VAULT_DIR || join(ROOT, "sample-vault");
-const OUT_DIR = join(ROOT, "public", "data");
+const OUT_DIR = process.env.OUT_DIR ? resolve(process.env.OUT_DIR) : join(ROOT, "public", "data");
 
 // Defensive guard: forbid syncing Kenneth's real Obsidian vault into public/data/.
 // Rule source: ~/.claude/memory/feedback_dotai_no_real_vault_sync.md (2026-05-29).
@@ -244,8 +244,8 @@ async function syncContentDrafts() {
 }
 
 // agents.json 唔係由 vault 派生——係 log-agent.mjs 寫嘅「員工運作狀態」。
-// sync 唔會 overwrite 佢；只喺唔存在時 seed 一個 11-row idle roster
-// （roster 定義 AI Office 頁面上嘅員工卡）。
+// sync 保留現有員工狀態，只補上 roster 入面尚未存在的 idle 員工
+// （roster 定義 AI Office 頁面上嘅完整員工卡）。
 const AGENT_ROSTER = [
   ["etsy-growth-radar", "Etsy Growth Radar", "🧭"],
   ["content-creator", "內容創作", "✍️"],
@@ -260,18 +260,30 @@ const AGENT_ROSTER = [
   ["whatsapp-secretary", "WhatsApp 私人秘書", "💬"]
 ];
 
-async function seedAgentsIfMissing() {
+async function seedMissingAgents() {
   const out = join(OUT_DIR, "agents.json");
+  let existing = [];
   try {
-    await readFile(out, "utf8");
-    console.log("  agents.json — 已存在，保留運作狀態（sync 唔郁佢）");
-  } catch {
-    const rows = AGENT_ROSTER.map(([id, name, emoji]) => ({
-      id, name, emoji, status: "idle", lastRun: null, outputCount: 0
-    }));
-    await writeFile(out, JSON.stringify(rows, null, 2) + "\n");
-    console.log(`  agents.json ← seed ${rows.length}-row idle roster`);
+    const parsed = JSON.parse(await readFile(out, "utf8"));
+    if (!Array.isArray(parsed)) throw new Error("agents.json must contain an array");
+    existing = parsed;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
+
+  const existingIds = new Set(existing.map((row) => row.id));
+  const missing = AGENT_ROSTER
+    .filter(([id]) => !existingIds.has(id))
+    .map(([id, name, emoji]) => ({ id, name, emoji, status: "idle", lastRun: null, outputCount: 0 }));
+
+  if (!missing.length) {
+    console.log(`  agents.json — ${existing.length} rows complete；保留現有運作狀態`);
+    return;
+  }
+
+  const rows = [...existing, ...missing];
+  await writeFile(out, JSON.stringify(rows, null, 2) + "\n");
+  console.log(`  agents.json ← 補上 ${missing.length} rows；總數 ${rows.length}，保留現有運作狀態`);
 }
 
 async function main() {
@@ -284,7 +296,7 @@ async function main() {
   await syncDailyNotes();
   await syncVaultHealth();
   await syncContentDrafts();
-  await seedAgentsIfMissing();
+  await seedMissingAgents();
   console.log("✅ sync done");
 }
 
