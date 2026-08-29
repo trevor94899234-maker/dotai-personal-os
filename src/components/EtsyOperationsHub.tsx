@@ -19,14 +19,17 @@ import {
   collectDraftTagIssues,
   collectListingDraftApprovalIssues,
   classifyEvidenceFile,
+  computeResearchCoverage,
   createId,
   deriveActiveDesignContent,
   deriveActiveDraftState,
+  deriveListingBriefSurfaceAccess,
   deriveWorkingItemState,
   hydrateListingDrafts,
   hydrateKnownDesigns,
   hydrateKnownProducts,
   hydrateKeywordResearch,
+  hydrateResearchResults,
   inferDesignSuggestion,
   legacyMigration,
   listingBriefMissing,
@@ -34,12 +37,22 @@ import {
   parseWorkbook,
   processEvidenceBatch,
   productFactGaps,
+  recommendDesignProduct,
+  researchQueryTasksForContext,
+  researchFocusLabelForRound,
+  researchRowsForContext,
   saveOperationsState,
+  selectResearchSupportRowLedger,
   shouldRunOcrBeforeConfirm,
   sourceAuthority,
+  isListingBriefEligibleForResearchContext,
+  latestResearchRoundForDesignProduct,
+  researchMalformedOptionalCollections,
+  SHORT_INTENT_V2_VERSION,
   summarizeMetricStatus,
   type ContentPost,
   type Design,
+  type DesignVisualProfile,
   type EvidenceArtifact,
   type EvidenceBatchItem,
   type EvidenceFileClassification,
@@ -53,6 +66,7 @@ import {
   isSupportedEvidenceFile,
 } from "../lib/etsyOperations";
 import { buildDecisionControlState } from "../lib/decisionControl";
+import { buildEtsyWorkflowPackage, resolveEtsyOperationsStageRequest, type EtsyStageRequest } from "../lib/etsyPromptPackage";
 
 type UploadDraft = EvidenceUploadDraft;
 const UPLOAD_DRAFT_KEY = "mygiftstyle-etsy-operations:upload-draft";
@@ -120,10 +134,41 @@ async function prepareDesignImage(file: File) {
   canvas.height = image.naturalHeight;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("This browser could not prepare the image for local analysis.");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const sampleStep = Math.max(1, Math.floor(Math.sqrt((canvas.width * canvas.height) / 50000)));
+  let visibleWeight = 0;
+  let luminanceTotal = 0;
+  for (let pixel = 0; pixel < canvas.width * canvas.height; pixel += sampleStep) {
+    const offset = pixel * 4;
+    const alpha = pixels[offset + 3] / 255;
+    if (alpha <= 0.1) continue;
+    const luminance = (0.2126 * pixels[offset]) + (0.7152 * pixels[offset + 1]) + (0.0722 * pixels[offset + 2]);
+    luminanceTotal += luminance * alpha;
+    visibleWeight += alpha;
+  }
+  const averageLuminance = visibleWeight ? luminanceTotal / visibleWeight : null;
+  const aspectRatio = canvas.width / Math.max(canvas.height, 1);
+  const visualProfile: DesignVisualProfile = {
+    tone: averageLuminance === null ? "unknown" : averageLuminance <= 110 ? "dark" : averageLuminance >= 190 ? "light" : "mixed",
+    shape: aspectRatio >= 0.8 && aspectRatio <= 1.25 ? "square" : "rectangular",
+    aspectRatio,
+  };
   context.fillStyle = "#FFFFFF";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0);
-  return { originalDataUrl, ocrDataUrl: canvas.toDataURL("image/png") };
+  return { originalDataUrl, ocrDataUrl: canvas.toDataURL("image/png"), visualProfile };
+}
+async function readDesignMessage(fileName: string, ocrDataUrl: string) {
+  const { createWorker } = await import("tesseract.js");
+  const worker = await createWorker("eng");
+  try {
+    const result = await worker.recognize(ocrDataUrl);
+    return inferDesignSuggestion(fileName, result.data.text);
+  } finally {
+    await worker.terminate();
+  }
 }
 function evidenceMimeType(file: File) {
   const isImage = file.type.startsWith("image/") || /\.(png|jpe?g)$/i.test(file.name);
@@ -163,7 +208,9 @@ function evidenceStateLabel(artifact: EvidenceArtifact) {
 function evidenceConfirmLabel(_artifact?: EvidenceArtifact) { return "Review before confirm"; }
 function downloadJson(name: string, value: unknown) { const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url); }
 
-export default function EtsyOperationsHub({ initialTab = "today", presentationOnly = false }: { initialTab?: OperationsTab; presentationOnly?: boolean }) {
+type EtsyOperationsHubProps = { initialTab?: OperationsTab; presentationOnly?: boolean; onStageRequestChange?: (request: EtsyStageRequest | null) => void };
+
+export default function EtsyOperationsHub({ initialTab = "today", presentationOnly = false, onStageRequestChange }: EtsyOperationsHubProps) {
   const [workspaceMode, setWorkspaceMode] = useState<"presentation" | "prototype">(presentationOnly ? "presentation" : "prototype");
   const [operationsTab, setOperationsTab] = useState<OperationsTab>(initialTab);
   const [workMode, setWorkMode] = useState<WorkMode>(() => loadWorkingContext().mode ?? "product-development");
@@ -182,11 +229,116 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const [product, setProduct] = useState(EMPTY_PRODUCT);
   const [design, setDesign] = useState(EMPTY_DESIGN);
   const [designAnalysisStatus, setDesignAnalysisStatus] = useState<"idle" | "analysing" | "ready" | "fallback">("idle");
+  const [savedDesignBusyId, setSavedDesignBusyId] = useState<string | null>(null);
   const [post, setPost] = useState(EMPTY_POST);
   const [listingStudio, setListingStudio] = useState({ productId: "", designId: "", positioning: "", seeds: "", tags: "", packageText: "" });
+  const [researchStageRequest, setResearchStageRequest] = useState<EtsyStageRequest | null>(null);
+  const pendingWorkflowFocus = useRef<OperationsTab | null>(null);
+
+  const visibleStageRequest = useMemo<EtsyStageRequest | null>(() => {
+    let analysisStageRequest: EtsyStageRequest | null = null;
+    let listingBriefStageRequest: EtsyStageRequest | null = null;
+    let listingBriefUnlocked = false;
+    if (state) {
+      const activeDesign = state.designs.find((item) => item.id === activeDesignId && !item.archivedAt)
+        ?? state.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID && !item.archivedAt);
+      const activeRound = activeDesign ? latestResearchRoundForDesignProduct(state, activeDesign.id, activeDesign.productId) : undefined;
+      if (activeDesign && activeRound) {
+        const exactContext = { designId: activeDesign.id, productId: activeDesign.productId, roundId: activeRound.id, seedVersion: activeRound.seedVersion };
+        const tasks = researchQueryTasksForContext(state.researchQueryTasks, exactContext);
+        const rows = researchRowsForContext(state.researchResultRows, exactContext);
+        if (tasks.length > 0 && tasks.every((task) => task.status === "received")) {
+          const supportRowLedger = selectResearchSupportRowLedger({ round: activeRound, tasks, rows });
+          if (supportRowLedger.length > 0) {
+            const coverage = computeResearchCoverage(activeRound, rows);
+            analysisStageRequest = {
+              stage: "product-research-analysis",
+              exactContext: { ...exactContext, roundNumber: activeRound.roundNumber, researchFocus: researchFocusLabelForRound(activeRound), designName: activeDesign.name, productName: state.products.find((item) => item.id === activeDesign.productId)?.name },
+              allowedInputs: [
+                `Completed-query ledger: ${tasks.map((task) => `${task.id} | ${task.query} | ${task.intentDimensionId} | ${task.status}`).join(" || ")}`,
+                `Coverage: ${coverage.map((item) => `${item.dimensionId}=${item.covered}`).join(" | ")}`,
+              ],
+              evidenceRefs: [...new Set(rows.map((row) => row.artifactId))],
+              supportRowLedger,
+              nextActionBoundary: "Return one close-research, collect-missing-input, or propose-gap-round action using only supplied supportRowLedger rowId values; never create a round, task, or owner approval.",
+            };
+          }
+        }
+
+        const activeDraft = deriveActiveDraftState(state.listingDrafts, activeDesign.id).currentDraft;
+        const surfaceAccess = deriveListingBriefSurfaceAccess(state, activeDesign.id, activeDesign.productId, activeDraft);
+        listingBriefUnlocked = surfaceAccess.exactApproved && (!activeDraft || surfaceAccess.canRevealDraft);
+        if (listingBriefUnlocked) {
+          const product = state.products.find((item) => item.id === activeDesign.productId);
+          listingBriefStageRequest = {
+            stage: "listing-brief",
+            exactContext: { ...exactContext, roundNumber: activeRound.roundNumber, researchFocus: researchFocusLabelForRound(activeRound), designName: activeDesign.name, productName: product?.name, ownerGate: "exact-approved" },
+            allowedInputs: activeDraft
+              ? [activeDraft.sourcePacket]
+              : [
+                `Product: ${product?.name ?? activeDesign.productId}`,
+                `Design: ${activeDesign.name} | recipient=${activeDesign.recipient || "missing"} | occasion=${activeDesign.occasion || "missing"}`,
+                `Frozen research seeds: ${activeRound.seedSnapshot.join(" | ")}`,
+              ],
+            evidenceRefs: [...new Set(rows.map((row) => row.artifactId))],
+            nextActionBoundary: "Return one local draft-only Listing Brief for owner review; do not publish, edit Etsy, or switch context.",
+          };
+        }
+      }
+    }
+    const listingAuditStageRequest: EtsyStageRequest | null = selectedListingId ? {
+      stage: "listing-audit",
+      exactContext: { operationsTab, workMode, selectedListingId, periodStart: auditPeriod.start, periodEnd: auditPeriod.end },
+      allowedInputs: [`Visible Existing Listing Audit workspace for ${selectedListingId}`],
+      evidenceRefs: [],
+      nextActionBoundary: "Return exactly one proposed audit next action for owner review; do not edit Etsy or transition automatically.",
+    } : null;
+    return resolveEtsyOperationsStageRequest({ operationsTab, workMode, researchStageRequest, analysisStageRequest, listingBriefStageRequest, listingAuditStageRequest, listingBriefUnlocked });
+  }, [activeDesignId, auditPeriod.end, auditPeriod.start, operationsTab, researchStageRequest, selectedListingId, state, workMode]);
 
   const showToast = (message: string) => { setNotice(message); setToast(message); };
+  function scrollToWorkflowTarget(nextTab: OperationsTab) {
+    const routeTarget = document.querySelector<HTMLElement>(`[data-etsy-route-target="${nextTab}"]:not([hidden])`);
+    const routeContent = routeTarget ?? document.getElementById("etsy-route-content") ?? document.getElementById("etsy-workflow-sections");
+    if (!routeContent) return;
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    const stickyNav = document.getElementById("etsy-workflow-sections");
+    const routeOffset = Math.max(96, (stickyNav?.getBoundingClientRect().height ?? 0) + 12);
+    window.scrollTo({ top: Math.max(0, routeContent.getBoundingClientRect().top + window.scrollY - routeOffset), behavior });
+  }
+  function queueWorkflowFocus(nextTab: OperationsTab) {
+    let attempts = 0;
+    const focusWhenReady = () => {
+      if (pendingWorkflowFocus.current !== nextTab || !state) return;
+      const hasExactTarget = Boolean(document.querySelector<HTMLElement>(`[data-etsy-route-target="${nextTab}"]:not([hidden])`));
+      if (!hasExactTarget && nextTab !== "social" && attempts < 10) {
+        attempts += 1;
+        window.requestAnimationFrame(focusWhenReady);
+        return;
+      }
+      scrollToWorkflowTarget(nextTab);
+      window.setTimeout(() => {
+        if (pendingWorkflowFocus.current !== nextTab) return;
+        scrollToWorkflowTarget(nextTab);
+        pendingWorkflowFocus.current = null;
+      }, 650);
+    };
+    window.setTimeout(() => window.requestAnimationFrame(focusWhenReady), 300);
+  }
+  function focusWorkflowTab(nextTab: OperationsTab) {
+    pendingWorkflowFocus.current = nextTab;
+    setOperationsTab(nextTab);
+    if (operationsTab === nextTab) queueWorkflowFocus(nextTab);
+  }
+  useEffect(() => {
+    if (pendingWorkflowFocus.current !== operationsTab || !state) return;
+    queueWorkflowFocus(operationsTab);
+  }, [operationsTab, state, workMode]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 6000); return () => window.clearTimeout(timer); }, [toast]);
+  useEffect(() => {
+    onStageRequestChange?.(visibleStageRequest);
+    return () => onStageRequestChange?.(null);
+  }, [onStageRequestChange, visibleStageRequest]);
   useEffect(() => {
     try {
       localStorage.setItem(ACTIVE_DESIGN_KEY, activeDesignId);
@@ -198,12 +350,12 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     void (async () => {
       try {
         const loaded = await loadOperationsState();
-        const migrated = hydrateListingDrafts(hydrateKeywordResearch(hydrateKnownDesigns(hydrateKnownProducts(legacyMigration(loaded)))));
+        const migrated = hydrateResearchResults(hydrateListingDrafts(hydrateKeywordResearch(hydrateKnownDesigns(hydrateKnownProducts(legacyMigration(loaded))))));
         if (migrated !== loaded) await saveOperationsState(migrated);
         setState(migrated);
-        setActiveDesignId((current) => migrated.designs.some((item) => item.id === current)
+        setActiveDesignId((current) => migrated.designs.some((item) => item.id === current && !item.archivedAt)
           ? current
-          : migrated.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID)?.id ?? migrated.designs[0]?.id ?? "");
+          : migrated.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID && !item.archivedAt)?.id ?? migrated.designs.find((item) => !item.archivedAt)?.id ?? "");
         setSelectedListingId((current) => migrated.listings.some((item) => item.id === current) ? current : "");
         setNotice(migrated.artifacts.length ? "Local evidence restored. Originals remain on this device." : "Public demo records are ready. Import private owner data locally or add dated evidence next.");
       } catch {
@@ -343,15 +495,21 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     }));
     setDesignAnalysisStatus("analysing");
     showToast("Preparing a white-background preview and reading this design locally…");
-    let worker: Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>> | null = null;
     try {
       const prepared = await prepareDesignImage(file);
       if (analysisRun !== designAnalysisRunRef.current) return;
-      setDesign((current) => ({ ...current, previewDataUrl: prepared.originalDataUrl }));
-      const { createWorker } = await import("tesseract.js");
-      worker = await createWorker("eng");
-      const result = await worker.recognize(prepared.ocrDataUrl);
-      const suggestion = inferDesignSuggestion(file.name, result.data.text);
+      const productRecommendation = state ? recommendDesignProduct(state.products, prepared.visualProfile) : null;
+      setDesign((current) => ({
+        ...current,
+        productId: productRecommendation?.productId ?? current.productId,
+        previewDataUrl: prepared.originalDataUrl,
+        visualTone: prepared.visualProfile.tone,
+        visualShape: prepared.visualProfile.shape,
+        aspectRatio: prepared.visualProfile.aspectRatio,
+        productSuggestionReason: productRecommendation?.reason,
+        suggestedProductId: productRecommendation?.productId,
+      }));
+      const suggestion = await readDesignMessage(file.name, prepared.ocrDataUrl);
       if (analysisRun !== designAnalysisRunRef.current) return;
       setDesign((current) => ({
         ...current,
@@ -371,9 +529,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       setDesign((current) => ({ ...current, sourceNote: "Local analysis was unavailable; safe defaults were applied." }));
       setDesignAnalysisStatus("fallback");
       showToast("Local OCR was unavailable. Safe defaults were filled; choose only the product to continue.");
-    } finally {
-      if (worker) await worker.terminate();
-    }
+    } finally { /* Worker cleanup happens inside readDesignMessage. */ }
   }
   function chooseActiveDesign(nextDesignId: string) {
     if (!nextDesignId) return;
@@ -393,7 +549,20 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     const product = state?.products.find((item) => item.id === listingStudio.productId);
     return collectDraftTagIssues(draftTags, product?.blockedClaims);
   }, [draftTags.join("|"), listingStudio.productId, state?.products]);
-  const studioGaps = useMemo(() => state ? listingBriefMissing(state, listingStudio.productId, listingStudio.designId, seedKeywords) : [], [listingStudio.designId, listingStudio.productId, seedKeywords.join("|"), state]);
+  const listingStudioResearchRound = useMemo(() => state ? [...state.researchRounds]
+    .filter((round) => round.designId === listingStudio.designId && round.productId === listingStudio.productId && round.seedVersion === SHORT_INTENT_V2_VERSION)
+    .sort((left, right) => right.roundNumber - left.roundNumber)[0] : undefined, [listingStudio.designId, listingStudio.productId, state]);
+  const listingStudioResearchContext = listingStudioResearchRound ? { designId: listingStudio.designId, productId: listingStudio.productId, roundId: listingStudioResearchRound.id, seedVersion: listingStudioResearchRound.seedVersion } : undefined;
+  const listingStudioSurfaceAccess = state && listingStudio.designId && listingStudio.productId
+    ? deriveListingBriefSurfaceAccess(state, listingStudio.designId, listingStudio.productId)
+    : undefined;
+  const researchStudioEligible = Boolean(listingStudioSurfaceAccess?.exactApproved);
+  const studioGaps = useMemo(() => {
+    if (!state) return [];
+    const gaps = listingBriefMissing(state, listingStudio.productId, listingStudio.designId, seedKeywords);
+    if (!researchStudioEligible) gaps.unshift("owner approval for this exact Product Development research round");
+    return gaps;
+  }, [listingStudio.designId, listingStudio.productId, researchStudioEligible, seedKeywords.join("|"), state]);
   const journal = state?.products.find((item) => item.id === "product-standard-journal");
   const journalEvidenceGaps = useMemo(() => state && journal ? productFactGaps(state, journal.id) : [], [journal, state]);
 
@@ -418,16 +587,20 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     showToast(kind === "product-facts" ? "Journal product-facts lane prepared. Add a product-page/specification screenshot or export, then date and save it." : "Journal cost-and-fulfilment lane prepared. Paste a dated supplier/official link or add a cost file, then save and confirm it.");
   }
 
-  async function attestJournalBaseline() {
-    if (!state || !journal) return;
-    const alreadyRecorded = state.artifacts.some((item) => item.kind === "product-facts" && item.targetId === journal.id && item.fileName === "Journal baseline owner attestation" && item.ownerConfirmed);
-    if (alreadyRecorded) { showToast("The Journal baseline attestation is already recorded. You can remove it from the evidence table if it is no longer current."); return; }
+  async function recordOwnerBaseline(product: Product) {
+    if (!state) return;
     const today = new Date().toISOString().slice(0, 10);
-    const artifact: EvidenceArtifact = {
-      id: createId("evidence"), kind: "product-facts", source: "owner", authority: "inference", fileName: "Journal baseline owner attestation", mimeType: "application/json", uploadedAt: new Date().toISOString(), periodStart: today, periodEnd: today, targetType: "product", targetId: journal.id, ownerConfirmed: true, ocrStatus: "not-needed", rows: null, headers: [], metrics: [],
-      contentText: ["Owner baseline attestation — no source file attached.", `Material: ${journal.material}`, `Size/pages: ${journal.size}`, `Production method: ${journal.productionMethod}`, "Use a current supplier product page, screenshot, or export to replace this attestation when details change."].join("\n"),
-    };
-    await commit({ ...state, artifacts: [artifact, ...state.artifacts] }, "Journal owner baseline attestation recorded. It is local, removable, and not presented as supplier evidence.");
+    const existingKinds = new Set(state.artifacts.filter((item) => item.targetType === "product" && item.targetId === product.id && item.ownerConfirmed).map((item) => item.kind));
+    const artifactBase = { source: "owner" as const, authority: "inference" as const, mimeType: "application/json", uploadedAt: new Date().toISOString(), periodStart: today, periodEnd: today, targetType: "product" as const, targetId: product.id, ownerConfirmed: true, ocrStatus: "not-needed" as const, rows: null, headers: [], metrics: [] };
+    const artifacts: EvidenceArtifact[] = [];
+    if (!existingKinds.has("product-facts")) artifacts.push({ ...artifactBase, id: createId("evidence"), kind: "product-facts", fileName: `${product.name} · owner baseline · product facts`, contentText: ["Owner baseline attestation — no source file attached.", `Material: ${product.material}`, `Size/pages/weight: ${product.size}`, `Production method: ${product.productionMethod}`, "Replace with a current product-page/specification source when details change."].join("\n") });
+    if (!existingKinds.has("cost-fulfilment")) artifacts.push({ ...artifactBase, id: createId("evidence"), kind: "cost-fulfilment", fileName: `${product.name} · owner baseline · cost & fulfilment`, contentText: ["Owner baseline attestation — no source file attached.", `Cost source: ${product.costSource}`, `Fulfilment source: ${product.fulfilmentSource}`, "Replace with a current supplier or official source when details change."].join("\n") });
+    if (!artifacts.length) { showToast("This product already has both owner-confirmed baseline evidence records. They remain local and removable."); return; }
+    await commit({ ...state, artifacts: [...artifacts, ...state.artifacts] }, `${product.name}: reused the earlier owner-provided baseline for Product facts and Cost & fulfilment. Local, removable, and not supplier evidence.`);
+  }
+
+  async function attestJournalBaseline() {
+    if (journal) await recordOwnerBaseline(journal);
   }
 
   async function saveUpload() {
@@ -533,19 +706,126 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     setDesign(EMPTY_DESIGN);
     setDesignAnalysisStatus("idle");
   }
+  async function analyseSavedDesign(designItem: Design, file: File, replacePreview: boolean) {
+    if (!state) return;
+    setSavedDesignBusyId(designItem.id);
+    showToast(replacePreview ? `Replacing ${designItem.name} and analysing the new image locally…` : `Reanalysing ${designItem.name} locally…`);
+    try {
+      const prepared = await prepareDesignImage(file);
+      const suggestion = await readDesignMessage(file.name, prepared.ocrDataUrl);
+      const recommendation = recommendDesignProduct(state.products, prepared.visualProfile);
+      const updatedDesign: Design = {
+        ...designItem,
+        productId: designItem.productId,
+        name: replacePreview ? suggestion.name : designItem.name,
+        recipient: suggestion.recipient,
+        occasion: suggestion.occasion,
+        assetName: replacePreview ? file.name : designItem.assetName,
+        previewDataUrl: replacePreview ? prepared.originalDataUrl : designItem.previewDataUrl,
+        analysisText: suggestion.detectedText,
+        analysisBasis: suggestion.basis,
+        visualTone: prepared.visualProfile.tone,
+        visualShape: prepared.visualProfile.shape,
+        aspectRatio: prepared.visualProfile.aspectRatio,
+        productSuggestionReason: recommendation?.reason,
+        suggestedProductId: recommendation?.productId,
+        sourceNote: suggestion.detectedText ? `Local OCR suggestion: ${suggestion.detectedText.slice(0, 500)}` : "Local safe defaults; no readable message text.",
+      };
+      await commit({ ...state, designs: state.designs.map((item) => item.id === designItem.id ? updatedDesign : item) }, replacePreview
+        ? `${updatedDesign.name} image replaced and reanalysed. Its design ID, linked product and research history were preserved.`
+        : `${updatedDesign.name} reanalysed. Its design ID, linked product and research history were preserved.`);
+    } catch {
+      showToast(`Could not ${replacePreview ? "replace" : "reanalyse"} ${designItem.name}. The saved design was not changed.`);
+    } finally {
+      setSavedDesignBusyId(null);
+    }
+  }
+  async function replaceSavedDesignImage(designItem: Design, event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/") && !/\.(?:png|jpe?g|webp)$/i.test(file.name)) {
+      showToast("Choose a PNG, JPG or WebP design file.");
+      input.value = "";
+      return;
+    }
+    await analyseSavedDesign(designItem, file, true);
+    input.value = "";
+  }
+  async function attachProductProof(designItem: Design, event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/") && !/\.(?:png|jpe?g|webp)$/i.test(file.name)) {
+      showToast("Choose a PNG, JPG or WebP product-proof image.");
+      input.value = "";
+      return;
+    }
+    if (!state) return;
+    const alreadyAttached = state.artifacts.some((item) => item.kind === "design" && item.targetType === "design" && item.targetId === designItem.id && item.ownerConfirmed);
+    if (alreadyAttached) {
+      showToast(`${designItem.name} already has owner-confirmed exact product proof. The existing proof was kept.`);
+      input.value = "";
+      return;
+    }
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const artifact: EvidenceArtifact = {
+        id: createId("evidence"), kind: "design", source: "owner", authority: "inference", fileName: file.name, mimeType: file.type || "image/jpeg", uploadedAt: new Date().toISOString(), periodStart: today, periodEnd: today, targetType: "design", targetId: designItem.id, ownerConfirmed: true, ocrStatus: "not-needed", rows: null, headers: [], metrics: [], dataUrl: await dataUrl(file),
+        contentText: `Owner-provided exact product proof for ${designItem.name}. Visual mockup linked to ${state.products.find((item) => item.id === designItem.productId)?.name ?? designItem.productId}; no performance metrics asserted.`,
+      };
+      await commit({ ...state, designs: state.designs.map((item) => item.id === designItem.id ? { ...item, mockupStatus: "ready" } : item), artifacts: [artifact, ...state.artifacts] }, `${file.name} attached to ${designItem.name} as owner-confirmed exact product proof. Original file was not changed.`);
+    } catch {
+      showToast(`Could not attach ${file.name}. The design and existing evidence were not changed.`);
+    } finally {
+      input.value = "";
+    }
+  }
+  async function reanalyseSavedDesign(designItem: Design) {
+    if (!designItem.previewDataUrl) { showToast(`${designItem.name} has no saved preview to reanalyse. Replace its image first.`); return; }
+    try {
+      const response = await fetch(designItem.previewDataUrl);
+      const blob = await response.blob();
+      const file = new File([blob], designItem.assetName || `${designItem.name}.png`, { type: blob.type || "image/png" });
+      await analyseSavedDesign(designItem, file, false);
+    } catch {
+      showToast(`${designItem.name} preview could not be reopened. The saved design was not changed.`);
+    }
+  }
+  async function archiveSavedDesign(designItem: Design) {
+    if (!state || designItem.archivedAt) return;
+    const archivedAt = new Date().toISOString();
+    const fallback = state.designs.find((item) => item.id !== designItem.id && !item.archivedAt);
+    if (activeDesignId === designItem.id) setActiveDesignId(fallback?.id ?? "");
+    await commit({ ...state, designs: state.designs.map((item) => item.id === designItem.id ? { ...item, archivedAt } : item) }, `${designItem.name} archived locally. Its research and drafts remain linked and it can be restored.`);
+  }
+  async function restoreSavedDesign(designItem: Design) {
+    if (!state || !designItem.archivedAt) return;
+    await commit({ ...state, designs: state.designs.map((item) => item.id === designItem.id ? { ...item, archivedAt: undefined } : item) }, `${designItem.name} restored to the active design library.`);
+  }
+  function useSavedDesign(designItem: Design) {
+    if (designItem.archivedAt) return;
+    setActiveDesignId(designItem.id);
+    setWorkMode("product-development");
+    showToast(`${designItem.name} is now the working design. Its saved research and draft state stay attached.`);
+  }
   async function addPost() { if (!state || !post.contentId.trim() || !post.listingId || !post.publishedOn) { showToast("Content ID, target listing and publish date are required for traceable social tracking."); return; } await commit({ ...state, posts: [{ ...post, id: createId("post") }, ...state.posts] }, "Social post saved. Platform metrics are context until Etsy attribution is confirmed."); setPost(EMPTY_POST); }
   async function saveListingDraft() {
     if (!state || !listingStudio.productId || !listingStudio.designId || !listingStudio.packageText.trim()) { showToast("Choose the product and design, then paste the complete Codex listing draft before saving."); return; }
+    if (!researchStudioEligible) { showToast("Listing Brief save is blocked until the owner approves this exact design, product, research round and seed version."); return; }
     const evidenceIds = state.artifacts.filter((item) => item.ownerConfirmed && (item.targetId === listingStudio.productId || item.targetId === listingStudio.designId)).map((item) => item.id);
-    await commit({ ...state, listingDrafts: [{ id: createId("listing-draft"), productId: listingStudio.productId, designId: listingStudio.designId, sourcePacket: listingStudio.packageText.trim(), tags: draftTags, evidenceIds, status: "draft", createdAt: new Date().toISOString() }, ...state.listingDrafts] }, "Codex listing draft saved locally. It has not been published or sent to Etsy.");
+    await commit({ ...state, listingDrafts: [{ id: createId("listing-draft"), productId: listingStudio.productId, designId: listingStudio.designId, sourcePacket: listingStudio.packageText.trim(), tags: draftTags, evidenceIds, status: "draft", createdAt: new Date().toISOString(), researchContext: listingStudioResearchContext }, ...state.listingDrafts] }, "Codex listing draft saved locally. It has not been published or sent to Etsy.");
     setListingStudio((current) => ({ ...current, packageText: "" }));
   }
   async function approveListingDraft(id: string) {
     if (!state) return;
     const draft = state.listingDrafts.find((item) => item.id === id);
     if (!draft) return;
-    const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === draft.designId);
-    const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DEMO_SEEDS : [];
+    const surfaceAccess = deriveListingBriefSurfaceAccess(state, draft.designId, draft.productId, draft);
+    if (!surfaceAccess.canRevealDraft) { showToast("Draft approval is blocked because the latest working Product Development round is unapproved or differs from this saved draft."); return; }
+    const latestResearchRound = latestResearchRoundForDesignProduct(state, draft.designId, draft.productId);
+    if (!latestResearchRound) return;
+    const approvalSeeds = latestResearchRound.seedSnapshot;
     const approvalIssues = collectListingDraftApprovalIssues(state, draft, approvalSeeds);
     if (approvalIssues.length) {
       showToast(`Approval is blocked: ${approvalIssues[0]}.`);
@@ -583,24 +863,45 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     ].join("\n");
   }
   function listingPacket() { const selectedProduct = state?.products.find((item) => item.id === listingStudio.productId); const selectedDesign = state?.designs.find((item) => item.id === listingStudio.designId); return ["NEW ETSY LISTING BRIEF", `Readiness: ${studioGaps.length ? "blocked" : "ready for Codex draft"}`, `Missing: ${studioGaps.join("; ") || "none"}`, "", `Product: ${selectedProduct?.name ?? "not selected"}`, `Product facts: ${selectedProduct ? `${selectedProduct.material}; ${selectedProduct.size}; ${selectedProduct.productionMethod}` : "missing"}`, `Fulfilment/cost source: ${selectedProduct ? `${selectedProduct.fulfilmentSource}; ${selectedProduct.costSource}` : "missing"}`, `Allowed claims: ${selectedProduct?.allowedClaims || "missing"}`, `Blocked claims: ${selectedProduct?.blockedClaims || "missing"}`, `Design: ${selectedDesign?.name ?? "not selected"} — ${selectedDesign?.recipient || "recipient missing"}; ${selectedDesign?.occasion || "occasion missing"}`, `Positioning: ${listingStudio.positioning || "missing"}`, `Seed keywords (${seedKeywords.length}): ${seedKeywords.join(", ") || "missing"}`, `Historical tag reference: ${HISTORICAL_TAG_REFERENCE}`, "Tag decision rule: consult the historical reference for relevant lanes and rejected terms, then prefer current dated research evidence and product truth. Each Etsy tag must be 20 characters or fewer; do not adopt a historical keyword only because it appears in the archive.", `Pasted draft tags (${draftTags.length}): ${draftTags.join(", ") || "not yet pasted"}`, `Tag checker: ${tagIssues.join("; ") || "no limit, duplicate, or blocked-claim issue detected"}`, "", "Requested Codex draft: natural American English title, 13 tags, description, FAQ, personalization wording, thumbnail brief and social-copy options. Keep all output draft-only for owner approval."].join("\n"); }
-  async function copy(text: string, success: string) { try { await navigator.clipboard.writeText(text); showToast(success); } catch { showToast("Copy failed. Browser clipboard permission may be blocked."); } }
-  async function importBackup(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; try { const imported = JSON.parse(await file.text()) as EtsyOperationsState; if (imported.version !== 1 || !Array.isArray(imported.artifacts) || !window.confirm("Replace the current local dashboard state with this backup?")) return; await commit(imported, "Backup imported locally."); } catch { showToast("This is not a valid Etsy Operations Hub backup file."); } finally { event.target.value = ""; } }
+  async function copy(text: string, success: string) {
+    try {
+      const isCodexHandoff = /^(ETSY MISSING-DATA REQUEST|ETSY READ-ONLY AUDIT PACKET|MYGIFTSTYLE SELLER DECISION BRIEF|NEW ETSY LISTING BRIEF)/.test(text);
+      if (isCodexHandoff && !visibleStageRequest) throw new Error("No visible typed Etsy stage request is ready.");
+      const stagePacket = visibleStageRequest ? { ...visibleStageRequest, allowedInputs: [text] } : null;
+      await navigator.clipboard.writeText(isCodexHandoff && stagePacket ? await buildEtsyWorkflowPackage(stagePacket) : text);
+      showToast(success);
+    } catch {
+      showToast("Copy failed. System Prompt package or browser clipboard is unavailable.");
+    }
+  }
+  async function importBackup(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; try { const imported = JSON.parse(await file.text()) as EtsyOperationsState; if (imported.version !== 1 || !Array.isArray(imported.artifacts) || !window.confirm("Replace the current local dashboard state with this backup?")) return; const newlyMalformed = researchMalformedOptionalCollections(imported); const hydrated = hydrateResearchResults(imported); await commit(hydrated, newlyMalformed.length ? `Backup imported. ${newlyMalformed.length} newly malformed optional research collection(s) were quarantined with their raw payload retained.` : "Backup imported locally."); } catch { showToast("This is not a valid Etsy Operations Hub backup file."); } finally { event.target.value = ""; } }
   function openActiveListingBrief() {
     const activeDesign = state?.designs.find((item) => item.id === activeDesignId);
     if (!state || !activeDesign) { showToast("Choose an active design before opening a Listing Brief."); return; }
+    const activeResearchRound = [...state.researchRounds]
+      .filter((round) => round.designId === activeDesign.id && round.productId === activeDesign.productId && round.seedVersion === SHORT_INTENT_V2_VERSION)
+      .sort((left, right) => right.roundNumber - left.roundNumber)[0];
+    const researchContext = activeResearchRound && { designId: activeDesign.id, productId: activeDesign.productId, roundId: activeResearchRound.id, seedVersion: activeResearchRound.seedVersion };
+    if (!researchContext || !isListingBriefEligibleForResearchContext(state, researchContext)) {
+      setOperationsTab("research");
+      showToast("Listing Brief is locked until you approve this exact design, product, research round and seed version.");
+      return;
+    }
     const savedDraft = deriveActiveDraftState(state.listingDrafts, activeDesign.id).currentDraft;
     if (savedDraft) {
       setOperationsTab("results");
-      showToast(savedDraft.status === "approved-for-manual-entry" ? `${activeDesign.name} is already approved for manual Etsy entry. Nothing was sent to Etsy.` : `A ${activeDesign.name} draft is already saved. Review it instead of creating a duplicate.`);
+      const surfaceAccess = deriveListingBriefSurfaceAccess(state, activeDesign.id, activeDesign.productId, savedDraft);
+      showToast(surfaceAccess.canRevealDraft
+        ? savedDraft.status === "approved-for-manual-entry" ? `${activeDesign.name} is already approved for manual Etsy entry. Nothing was sent to Etsy.` : `A ${activeDesign.name} draft is already saved. Review it instead of creating a duplicate.`
+        : `A ${activeDesign.name} draft remains as historical metadata only. Its title and package stay hidden because it does not match the latest exact approved context.`);
       return;
     }
-    const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === activeDesign.id);
     const isDemoDesign = activeDesign.id === DEFAULT_ACTIVE_DESIGN_ID;
     setListingStudio({
       productId: activeDesign.productId,
       designId: activeDesign.id,
       positioning: isDemoDesign ? "Public demo positioning for a family keepsake journal. Replace with owner-confirmed local context before approval." : "",
-      seeds: (linkedLoop?.queries?.length ? linkedLoop.queries : isDemoDesign ? DEMO_SEEDS : []).join("\n"),
+      seeds: activeResearchRound.seedSnapshot.join("\n"),
       tags: isDemoDesign ? DEMO_TAGS.join("\n") : "",
       packageText: isDemoDesign ? DEMO_DRAFT_PACKAGE : "",
     });
@@ -615,9 +916,20 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   const sellerDecision = buildSellerDecision(state, activeListingId);
   const decisionControl = buildDecisionControlState(state.artifacts, selectedListing, auditPeriod);
   const eligibleArtifacts = state.artifacts.filter((item) => item.ownerConfirmed);
-  const activeDesign = state.designs.find((item) => item.id === activeDesignId)
-    ?? state.designs.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID);
-  const coachDiagnosis = buildCoachDiagnosis(state, {
+  const activeDesigns = state.designs.filter((item) => !item.archivedAt);
+  const archivedDesigns = state.designs.filter((item) => Boolean(item.archivedAt));
+  const activeDesign = activeDesigns.find((item) => item.id === activeDesignId)
+    ?? activeDesigns.find((item) => item.id === DEFAULT_ACTIVE_DESIGN_ID);
+  const activeResearchRound = activeDesign ? [...state.researchRounds]
+    .filter((round) => round.designId === activeDesign.id && round.productId === activeDesign.productId && round.seedVersion === SHORT_INTENT_V2_VERSION)
+    .sort((left, right) => right.roundNumber - left.roundNumber)[0] : undefined;
+  const activeResearchFocus = researchFocusLabelForRound(activeResearchRound);
+  const activeBriefSurfaceAccess = activeDesign ? deriveListingBriefSurfaceAccess(state, activeDesign.id, activeDesign.productId) : undefined;
+  const researchBriefEligible = Boolean(activeBriefSurfaceAccess?.exactApproved);
+  const visibleStudioEligible = Boolean(researchStudioEligible && researchBriefEligible
+    && activeDesign?.id === listingStudio.designId
+    && activeDesign.productId === listingStudio.productId);
+  const coachDiagnosisBase = buildCoachDiagnosis(state, {
     activeDesignId: activeDesign?.id,
     selectedListingId: activeListingId,
     periodStart: auditPeriod.start,
@@ -625,18 +937,24 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
   });
   const activeLoop = state.keywordResearchLoops.find((item) => item.designId === activeDesign?.id);
   const activeResearch = state.artifacts.filter((item) => item.kind === "keyword-research" && item.ownerConfirmed && (item.targetId === activeDesign?.id || item.targetId === activeDesign?.productId));
-  const activeSeeds = activeLoop?.queries?.length
-    ? activeLoop.queries
+  const activeSeeds = activeResearchRound?.seedSnapshot?.length
+    ? activeResearchRound.seedSnapshot
     : activeDesign?.id === DEFAULT_ACTIVE_DESIGN_ID
       ? DEMO_SEEDS
       : listingStudio.designId === activeDesign?.id
         ? seedKeywords
         : [];
   const activeBriefGaps = activeDesign ? listingBriefMissing(state, activeDesign.productId, activeDesign.id, activeSeeds) : ["choose an active design"];
-  const hasKeywordDecision = activeLoop?.stage === "conclusion-ready" && Boolean(activeLoop.primaryKeyword);
+  const hasResearchConclusion = Boolean(activeResearchRound?.conclusion);
+  const hasKeywordDecision = activeResearchRound?.conclusion?.decision === "retain";
   const activeDraftState = deriveActiveDraftState(state.listingDrafts, activeDesign?.id);
   const latestActiveDraft = activeDraftState.currentDraft;
   const hasDraft = activeDraftState.hasDraft;
+  const activeDraftSurfaceAccess = latestActiveDraft && activeDesign
+    ? deriveListingBriefSurfaceAccess(state, activeDesign.id, activeDesign.productId, latestActiveDraft)
+    : undefined;
+  const currentDraftContentVisible = Boolean(activeDraftSurfaceAccess?.canRevealDraft);
+  const listingBriefResultSurfaceVisible = researchBriefEligible && (!latestActiveDraft || currentDraftContentVisible);
   const savedDraftApprovalGaps = latestActiveDraft && activeDesign
     ? listingBriefMissing(state, latestActiveDraft.productId, latestActiveDraft.designId, activeSeeds)
     : [];
@@ -652,17 +970,62 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     && savedDraftApprovalGaps.length === 0
     && savedDraftTagIssues.length === 0
     && savedDraftPackageIssues.length === 0;
-  const approvedActiveDraft = activeDraftState.approvedDraft && savedDraftReadyForApproval
+  const visibleDraftReadyForApproval = savedDraftReadyForApproval && currentDraftContentVisible;
+  const approvedActiveDraft = activeDraftState.approvedDraft && visibleDraftReadyForApproval
     ? activeDraftState.approvedDraft
     : undefined;
   const hasApprovedDraft = Boolean(approvedActiveDraft);
-  const activeDesignContent = deriveActiveDesignContent(
-    state,
-    activeDesign?.id,
-    { designId: DEFAULT_ACTIVE_DESIGN_ID, sourcePacket: DEMO_DRAFT_PACKAGE },
-    { designId: listingStudio.designId, sourcePacket: listingStudio.packageText },
-  );
-  const primaryDashboard = buildPrimaryDashboardSummary({
+  const coachDiagnosis = researchBriefEligible && listingBriefResultSurfaceVisible
+    ? {
+      ...coachDiagnosisBase,
+      firstBrokenLink: "Owner-approved Listing Brief",
+      verdict: hasApprovedDraft
+        ? "The exact design, product, research round and Listing Brief are approved for manual Etsy entry. Keep any Etsy change manual."
+        : "The exact design, product, research round and seed version are approved. The local Listing Brief is ready to review.",
+      nextAction: {
+        label: hasApprovedDraft ? "Review approved Listing Brief" : "Open Listing Brief",
+        detail: hasApprovedDraft ? "Review or copy the approved local brief; no Etsy publish or account connection." : "Open the local Listing Brief for this exact approved context.",
+        tab: "results" as const,
+      },
+      reviewSignal: "Owner approval is complete for this exact design, product, research round and seed version.",
+    }
+    : researchBriefEligible && !listingBriefResultSurfaceVisible
+      ? {
+        ...coachDiagnosisBase,
+        firstBrokenLink: "Current exact Listing Brief draft",
+        verdict: "Research approval is complete, but the saved draft belongs to an older context; its package stays hidden.",
+        nextAction: { label: "Review current Research context", detail: "Open Research to work with the latest exact design, product, round and seed version.", tab: "research" as const },
+        reviewSignal: "Owner approval is complete, but only a current exact-context draft can become visible.",
+      }
+      : coachDiagnosisBase.nextAction.tab === "results" && !listingBriefResultSurfaceVisible
+        ? {
+          ...coachDiagnosisBase,
+          firstBrokenLink: "Exact owner approval",
+          verdict: "Listing Brief content remains locked. Approve the latest exact design, product, round, and seed version before opening or reviewing a draft.",
+          nextAction: { label: "Review exact owner gate", detail: "Return to Product Development Research; historical drafts remain metadata-only and no package is revealed.", tab: "research" as const },
+          reviewSignal: "The latest exact research context is not yet owner-approved; only its current matching draft can then become visible.",
+        }
+        : coachDiagnosisBase;
+  const analysisNextAction = researchBriefEligible
+    ? "Owner approval is complete; review or copy the approved Listing Brief for this exact context."
+    : activeResearchRound?.conclusion?.nextAction ?? "Add or confirm research evidence for this exact context.";
+  const activeDesignContent = researchBriefEligible && (!latestActiveDraft || currentDraftContentVisible)
+    ? deriveActiveDesignContent(
+      state,
+      activeDesign?.id,
+      { designId: DEFAULT_ACTIVE_DESIGN_ID, sourcePacket: DEMO_DRAFT_PACKAGE },
+      { designId: listingStudio.designId, sourcePacket: listingStudio.packageText },
+    )
+    : {
+      designId: activeDesign?.id,
+      designName: activeDesign?.name ?? "Choose a design",
+      isDemoDesign: activeDesign?.id === DEFAULT_ACTIVE_DESIGN_ID,
+      todayLabel: activeDesign ? `Today’s next step · ${activeDesign.name}${activeDesign.id === DEFAULT_ACTIVE_DESIGN_ID ? " example" : ""}` : "Today’s next step · Choose a design",
+      designStepDetail: activeDesign?.name ?? "No design selected",
+      sourcePacket: "",
+      draftTitle: undefined,
+    };
+  const primaryDashboardBase = buildPrimaryDashboardSummary({
     designName: activeDesign?.name,
     researchCount: activeResearch.length,
     primaryKeyword: activeLoop?.stage === "conclusion-ready" ? activeLoop.primaryKeyword : undefined,
@@ -670,8 +1033,20 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
     hasDraft,
     hasApprovedDraft,
     draftTitle: activeDesignContent.draftTitle,
-    draftReadyForApproval: savedDraftReadyForApproval,
+    draftReadyForApproval: visibleDraftReadyForApproval,
   });
+  const primaryDashboard = (!researchBriefEligible || (hasDraft && !currentDraftContentVisible)) && primaryDashboardBase.actionTab === "results"
+    ? {
+      ...primaryDashboardBase,
+      analysisFocus: hasDraft
+        ? "A saved Listing Brief exists as historical metadata only; its title and package stay hidden until the latest exact research context is owner-approved."
+        : primaryDashboardBase.analysisFocus,
+      proposedDecision: "Keep Listing Brief content locked and return to the latest exact Research round for owner approval.",
+      actionLabel: "Review exact owner gate",
+      actionDetail: "Approve the latest exact design, product, round and seed version before any Listing Brief content or control becomes available.",
+      actionTab: "research" as const,
+    }
+    : primaryDashboardBase;
   const socialListing = state.listings.find((item) => item.id === post.listingId);
   const workingDesign = activeDesign;
   const selectedProduct = state.products.find((item) => item.id === listingStudio.productId)
@@ -735,9 +1110,9 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       scene: "02 · Evidence",
       tab: "research",
       label: "Research 資料",
-      status: activeResearch.length ? "draft" : "gated",
-      statusLabel: activeResearch.length ? "已有輸入" : "等證據解鎖",
-      detail: activeResearch.length ? `已有 ${activeResearch.length} 份 confirmed research evidence；仍要由 owner 核對來源。` : "Evidence intake、OCR、確認流程已做；而家仍缺可作決策嘅 dated first-party evidence。",
+      status: researchBriefEligible ? "ready" : activeResearch.length ? "draft" : "gated",
+      statusLabel: researchBriefEligible ? "Exact context approved" : activeResearch.length ? "已有輸入" : "等證據解鎖",
+      detail: researchBriefEligible ? "目前 design、product、round 同 seed version 已完成 exact owner approval；Listing Brief 可按目前 context 使用。" : activeResearch.length ? `已有 ${activeResearch.length} 份 confirmed research evidence；仍要由 owner 核對來源。` : "Evidence intake、OCR、確認流程已做；而家仍缺可作決策嘅 dated research evidence。",
       action: "進入 Research 資料",
     },
     {
@@ -809,7 +1184,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         <label className="text-xs font-semibold text-ink">Working listing<select value={selectedListingId} onChange={(event) => setSelectedListingId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal"><option value="">Choose a listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         <label className="text-xs font-semibold text-ink">Comparable start<input type="date" value={auditPeriod.start} onChange={(event) => setAuditPeriod((current) => ({ ...current, start: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal" /></label>
         <label className="text-xs font-semibold text-ink">Comparable end<input type="date" value={auditPeriod.end} onChange={(event) => setAuditPeriod((current) => ({ ...current, end: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal" /></label>
-      </div> : <div className="mt-4 rounded-2xl border border-sage/20 bg-white p-4" aria-label="New Product working context"><label className="block text-xs font-semibold text-ink">Working design<select value={activeDesign?.id ?? ""} onChange={(event) => chooseActiveDesign(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal sm:max-w-md">{state.designs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>}
+      </div> : <div className="mt-4 rounded-2xl border border-sage/20 bg-white p-4" aria-label="New Product working context"><label className="block text-xs font-semibold text-ink">Working design record<select value={activeDesign?.id ?? ""} onChange={(event) => chooseActiveDesign(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal sm:max-w-md">{activeDesigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{activeResearchRound && <div className="mt-3 rounded-xl border border-brand/25 bg-[#FFF9F3] px-3 py-2.5" aria-label="Dashboard research focus"><p className="text-xs font-bold uppercase tracking-[0.12em] text-brand">Research focus · {activeResearchFocus}</p><p className="mt-1 text-xs leading-5 text-muted">Round {activeResearchRound.roundNumber} 嘅 frozen inputs 先係今輪研究方向；design record 只作 exact lineage，唔會將其他設計嘅 buyer lane 混入。</p></div>}</div>}
     </section>
     <details className="overflow-hidden rounded-[22px] border border-copper/25 bg-[#FFF9F3] shadow-card" aria-label="Implementation map">
       <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand sm:px-5">
@@ -826,7 +1201,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       </div>
       <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {implementationLanes.map((lane) => (
-          <button key={`${lane.scene}-${lane.label}`} type="button" onClick={() => setOperationsTab(lane.tab)} className="group min-w-0 rounded-2xl border border-line bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-copper/35 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
+          <button key={`${lane.scene}-${lane.label}`} type="button" onClick={() => focusWorkflowTab(lane.tab)} className="group min-w-0 rounded-2xl border border-line bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-copper/35 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
             <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted">{lane.scene}</p><h3 className="mt-1 text-sm font-bold text-ink">{lane.label}</h3></div><span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${implementationTone(lane.status)}`}>{lane.statusLabel}</span></div>
             <p className="mt-3 min-h-10 text-xs leading-5 text-muted">{lane.detail}</p>
             <span className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-ink group-hover:text-brand">{lane.action}<span aria-hidden="true">→</span></span>
@@ -835,21 +1210,21 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       </div>
       </div>
     </details>
-    <section aria-label="目前設計分析與行動" aria-live="polite" className="rounded-[26px] border border-line bg-panel p-4 shadow-card sm:p-5">
+    <section data-etsy-route-target="today" aria-label="目前設計分析與行動" aria-live="polite" className="scroll-mt-24 rounded-[26px] border border-line bg-panel p-4 shadow-card sm:p-5">
       <div className="mb-4 flex flex-col gap-3 border-b border-line pb-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-copper">Analysis → decision → action</p>
           <h2 className="mt-1 font-display text-xl font-bold text-ink sm:text-2xl">由分析直接去到行動</h2>
         </div>
-        <label className="w-full text-xs font-semibold text-ink sm:max-w-sm">
-          Working Design · 目前設計
+          <label className="w-full text-xs font-semibold text-ink sm:max-w-sm">
+          Working Design record · 目前設計
           <select value={activeDesign?.id ?? ""} onChange={(event) => chooseActiveDesign(event.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-[#FBF7F2] px-3 py-2.5 text-sm font-normal text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
-            {state.designs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {activeDesigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
         </label>
       </div>
       {primaryDashboard.hasAnalysis ? <ol className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="目前設計到執行動作">
-        <li className="min-w-0 rounded-2xl border border-line bg-[#FBF7F2] p-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-copper">01 · 目前設計</p><p className="mt-2 break-words text-sm font-bold leading-5 text-ink">{activeDesign?.name}</p><p className="mt-2 text-xs leading-5 text-muted">{activeDesign ? `${activeDesign.recipient || "未指定對象"} · ${activeDesign.occasion || "未指定場合"}` : ""}</p></li>
+        <li className="min-w-0 rounded-2xl border border-line bg-[#FBF7F2] p-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-copper">01 · 目前設計 record</p><p className="mt-2 break-words text-sm font-bold leading-5 text-ink">{activeDesign?.name}</p><p className="mt-2 text-xs leading-5 text-muted">{activeDesign ? `${activeDesign.recipient || "未指定對象"} · ${activeDesign.occasion || "未指定場合"}` : ""}</p>{activeResearchRound && <p className="mt-2 font-semibold text-brand">Research focus · {activeResearchFocus}</p>}</li>
         <li className="min-w-0 rounded-2xl border border-line bg-white p-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-sage">02 · 分析重點</p><p className="mt-2 text-sm font-semibold leading-6 text-ink">{primaryDashboard.analysisFocus}</p></li>
         <li className="min-w-0 rounded-2xl border border-copper/25 bg-[#FFF9F3] p-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-copper">03 · 建議決定</p><p className="mt-2 text-sm font-bold leading-6 text-ink">{primaryDashboard.proposedDecision}</p></li>
         <li className="min-w-0 rounded-2xl border border-sage/25 bg-[#F3F8F4] p-4"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-sage">04 · 執行動作</p><p className="mt-2 text-sm font-bold leading-5 text-ink">{primaryDashboard.actionLabel}</p><p className="mt-1 text-xs leading-5 text-muted">{primaryDashboard.actionDetail}</p>{primaryDashboard.actionTab && <button type="button" aria-label={`${primaryDashboard.actionLabel}：${activeDesign?.name ?? "目前設計"}`} onClick={() => { if (primaryDashboard.actionTab === "results" && hasKeywordDecision && !hasDraft) openActiveListingBrief(); else setOperationsTab(primaryDashboard.actionTab!); }} className="mt-3 inline-flex min-h-11 items-center justify-center rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">{primaryDashboard.actionLabel}<span className="ml-1" aria-hidden="true">→</span></button>}</li>
@@ -870,26 +1245,41 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       </details>
     </section>
     {operationsTab === "today" && <CoachDiagnosisCard diagnosis={coachDiagnosis} onAction={setOperationsTab} />}
-    {operationsTab === "results" && <section className="rounded-[26px] border border-copper/25 bg-[#FFF9F3] p-5 shadow-card sm:p-6" aria-label="Listing Brief workspace status"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">{activeDesign?.name ?? "Choose a design"} · Listing Brief</p><h3 className="mt-1 font-display text-2xl font-bold text-ink">{hasApprovedDraft ? "Approved for manual Etsy entry" : hasDraft ? "Saved draft ready for review" : hasKeywordDecision ? "Ready to create the draft" : "Waiting for a keyword decision"}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasApprovedDraft ? "The current draft is the exact package approved for manual entry. Nothing has been published or connected." : hasDraft ? savedDraftReadyForApproval ? "Your current draft has the required product, research, tag, and blocked-claim checks. Review it, then approve only when you are satisfied." : `This saved draft still needs: ${savedDraftBlockingIssue}.` : hasKeywordDecision ? "The keyword decision is ready. Load the complete draft package below; no extra keyword typing is needed." : "Go to 分析與決定 first. The dashboard will show whether it needs deeper research or can create the Listing Brief."}</p></div><div className="flex shrink-0 flex-wrap gap-2">{hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved draft</button>}{!hasDraft && hasKeywordDecision && <button type="button" onClick={openActiveListingBrief} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Load Listing Brief</button>}{hasDraft && !hasApprovedDraft && savedDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual entry</button>}{!hasKeywordDecision && !hasDraft && <button type="button" onClick={() => setOperationsTab("analysis")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Open analysis</button>}</div></div></section>}
-    {hasDraft && <section className={`rounded-[26px] border p-5 shadow-card ${hasApprovedDraft ? "border-sage/25 bg-[#E8F0E6]" : savedDraftReadyForApproval ? "border-sage/25 bg-[#F3F8F4]" : "border-copper/25 bg-[#F9EEE4]"}`} aria-label="Active design manual entry status"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">{activeDesign?.name ?? "Active design"} · manual entry status</p><h3 className="mt-1 text-xl font-bold text-ink">{hasApprovedDraft ? "已批准作手動輸入 Etsy" : savedDraftReadyForApproval ? "已準備好，等你批准" : "未可批准"}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasApprovedDraft ? "目前顯示同複製嘅正是已批准草稿；此 dashboard 從未發佈、修改或連接 Etsy。" : savedDraftReadyForApproval ? "毋須再提供資料。你只需檢查目前草稿，然後按一次批准。" : `而家只需要處理：${savedDraftBlockingIssue}。`}</p></div><div className="flex shrink-0 flex-wrap gap-2">{hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved Listing Brief</button>}{!hasApprovedDraft && savedDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual Etsy entry</button>}{!hasApprovedDraft && !savedDraftReadyForApproval && <button type="button" onClick={() => setOperationsTab("results")} className="rounded-xl border border-line bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-[#F8EDE4]">查看需要處理項目</button>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{[["產品、Design、research evidence", savedDraftApprovalGaps.length === 0], ["13 個有效 tags", savedDraftTagIssues.length === 0], ["Customer-facing blocked claims", savedDraftPackageIssues.length === 0], ["Owner approval", hasApprovedDraft]].map(([label, complete]) => <div key={label as string} className="rounded-xl border border-white bg-white/80 px-3 py-2 text-xs"><span className={`mr-1 font-bold ${complete ? "text-sage" : "text-copper"}`}>{complete ? "✓" : "•"}</span><span className="font-semibold text-ink">{label}</span><span className="ml-1 text-muted">{complete ? "完成" : "未完成"}</span></div>)}</div></section>}
+    {operationsTab === "results" && <section className="scroll-mt-24 rounded-[26px] border border-copper/25 bg-[#FFF9F3] p-5 shadow-card sm:p-6" aria-label="Listing Brief workspace status">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">{activeDesign?.name ?? "Choose a design"} · Listing Brief</p>
+          <h3 className="mt-1 font-display text-2xl font-bold text-ink">{hasApprovedDraft ? "Approved for manual Etsy entry" : hasDraft && currentDraftContentVisible ? "Saved draft ready for review" : hasDraft ? "Historical draft metadata only" : researchBriefEligible ? "Ready to create the draft" : "Locked for exact owner approval"}</h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasApprovedDraft ? "The current draft is the exact package approved for manual entry. Nothing has been published or connected." : hasDraft && currentDraftContentVisible ? visibleDraftReadyForApproval ? "Your current draft has the required product, research, tag, and blocked-claim checks. Review it, then approve only when you are satisfied." : `This saved draft still needs: ${savedDraftBlockingIssue}.` : hasDraft ? "A saved draft record remains in history, but its title and package are hidden because it is not the current draft for the latest exact approved research context." : researchBriefEligible ? "The exact design, product, round and seed version are approved. Load the draft-only package below." : "Return to Product Development Research. Listing Brief title, package, copy, save, and approval controls stay locked until the owner approves this exact design, product, round and seed version."}</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved draft</button>}
+          {!hasDraft && researchBriefEligible && <button type="button" onClick={openActiveListingBrief} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Load Listing Brief</button>}
+          {hasDraft && !hasApprovedDraft && visibleDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual entry</button>}
+          {!researchBriefEligible && <button type="button" onClick={() => setOperationsTab("research")} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Return to Research</button>}
+        </div>
+      </div>
+    </section>}
+    {hasDraft && <section className={`rounded-[26px] border p-5 shadow-card ${hasApprovedDraft ? "border-sage/25 bg-[#E8F0E6]" : visibleDraftReadyForApproval ? "border-sage/25 bg-[#F3F8F4]" : "border-copper/25 bg-[#F9EEE4]"}`} aria-label="Active design manual entry status"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">{activeDesign?.name ?? "Active design"} · manual entry status</p><h3 className="mt-1 text-xl font-bold text-ink">{hasApprovedDraft ? "已批准作手動輸入 Etsy" : visibleDraftReadyForApproval ? "已準備好，等你批准" : !currentDraftContentVisible ? "只顯示歷史 metadata" : "未可批准"}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{!researchBriefEligible ? "目前 research context 未有 exact owner approval；舊 draft approval 不會解鎖或顯示新 round 嘅 Listing Brief。" : !currentDraftContentVisible ? "呢個 draft 並非最新 exact approved context 嘅 current draft；title 同 package 保持隱藏，只保留歷史 metadata。" : hasApprovedDraft ? "目前顯示同複製嘅正是已批准草稿；此 dashboard 從未發佈、修改或連接 Etsy。" : visibleDraftReadyForApproval ? "毋須再提供資料。你只需檢查目前草稿，然後按一次批准。" : `而家只需要處理：${savedDraftBlockingIssue}。`}</p></div><div className="flex shrink-0 flex-wrap gap-2">{hasApprovedDraft && approvedActiveDraft && <button type="button" onClick={() => void copy(approvedActiveDraft.sourcePacket, "Approved Listing Brief copied. You can keep it for later manual Etsy entry.")} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Copy approved Listing Brief</button>}{!hasApprovedDraft && visibleDraftReadyForApproval && latestActiveDraft && <button type="button" onClick={() => void approveListingDraft(latestActiveDraft.id)} className="min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Approve for manual Etsy entry</button>}{(!researchBriefEligible || !currentDraftContentVisible || (!hasApprovedDraft && !visibleDraftReadyForApproval)) && <button type="button" onClick={() => setOperationsTab(researchBriefEligible ? "results" : "research")} className="min-h-11 rounded-xl border border-line bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-[#F8EDE4]">{researchBriefEligible ? "查看 metadata" : "Return to Research"}</button>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{[["產品、Design、research evidence", currentDraftContentVisible && savedDraftApprovalGaps.length === 0], ["13 個有效 tags", currentDraftContentVisible && savedDraftTagIssues.length === 0], ["Customer-facing blocked claims", currentDraftContentVisible && savedDraftPackageIssues.length === 0], ["Exact research owner approval", researchBriefEligible]].map(([label, complete]) => <div key={label as string} className="rounded-xl border border-white bg-white/80 px-3 py-2 text-xs"><span className={`mr-1 font-bold ${complete ? "text-sage" : "text-copper"}`}>{complete ? "✓" : "•"}</span><span className="font-semibold text-ink">{label}</span><span className="ml-1 text-muted">{complete ? "完成" : "未完成"}</span></div>)}</div></section>}
     {toast && <div role="status" aria-live="polite" className="fixed bottom-5 right-5 z-50 flex max-w-[min(26rem,calc(100vw-2rem))] items-start gap-3 rounded-2xl border border-[#B9D7C0] bg-white p-4 shadow-xl"><CheckCircle2 size={20} className="mt-0.5 shrink-0 text-sage" aria-hidden="true" /><div><p className="text-xs font-bold uppercase tracking-[0.12em] text-sage">Dashboard received it</p><p className="mt-1 text-sm font-semibold text-ink">{toast}</p></div><button type="button" onClick={() => setToast(null)} aria-label="Close confirmation" className="ml-1 rounded-md p-1 text-muted hover:bg-[#F8EDE4] hover:text-ink"><X size={16} /></button></div>}
-    <nav className="grid grid-cols-3 gap-2 rounded-2xl border border-line bg-panel p-2 shadow-card sm:flex sm:flex-wrap" aria-label="Etsy workflow sections">{([ ["today", "今日下一步"], ["research", "Research 資料"], ["analysis", "分析與決定"], ["results", "Listing Brief"], ["library", "產品與資料"], ["social", "Social tracking"] ] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setOperationsTab(id)} aria-current={operationsTab === id ? "page" : undefined} className={`flex min-h-11 items-center justify-center rounded-xl px-2 py-2 text-center text-xs font-bold sm:px-4 sm:py-2.5 sm:text-sm ${operationsTab === id ? "bg-ink text-white" : "text-muted hover:bg-[#F8EDE4] hover:text-ink"}`}>{label}</button>)}</nav>
-    {operationsTab === "analysis" && (
-      <section className="rounded-[26px] border border-sage/25 bg-[#F3F8F4] p-5 shadow-card sm:p-6" aria-label="Codex keyword analysis status">
+    <nav id="etsy-workflow-sections" className="sticky top-2 z-30 grid grid-cols-3 gap-2 rounded-2xl border border-line bg-panel p-2 shadow-card sm:flex sm:flex-wrap" aria-label="Etsy workflow sections">{([ ["today", "今日下一步"], ["research", "Research 資料"], ["analysis", "分析與決定"], ["results", "Listing Brief"], ["library", "產品與資料"], ["social", "Social tracking"] ] as const).map(([id, label]) => <button key={id} type="button" onClick={() => focusWorkflowTab(id)} aria-current={operationsTab === id ? "page" : undefined} className={`flex min-h-11 items-center justify-center rounded-xl px-2 py-2 text-center text-xs font-bold sm:px-4 sm:py-2.5 sm:text-sm ${operationsTab === id ? "bg-ink text-white" : "text-muted hover:bg-[#F8EDE4] hover:text-ink"}`}>{label}</button>)}</nav>
+    <div id="etsy-route-content" className="scroll-mt-24">
+    {operationsTab === "analysis" && workMode === "product-development" && (
+      <section data-etsy-route-target="analysis" className="scroll-mt-24 rounded-[26px] border border-sage/25 bg-[#F3F8F4] p-5 shadow-card sm:p-6" aria-label="Codex keyword analysis status">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">Codex analysis status</p>
-            <h3 className="mt-1 font-display text-2xl font-bold text-ink">{hasKeywordDecision ? "Keyword decision is ready" : activeResearch.length ? "Research evidence received" : "Waiting for research input"}</h3>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasKeywordDecision ? "以下係 draft-only keyword decision；唔代表 Etsy demand、sales 或 conversion 保證。" : activeResearch.length ? "Codex 會先核對 evidence quality，再決定是否需要第二輪 research 或可得出 keyword conclusion。" : "你只需到 Research 資料 upload CSV／Excel，或者貼上 eRank／EverBee cap 圖。"}</p>
+            <h3 className="mt-1 font-display text-2xl font-bold text-ink">{hasResearchConclusion ? `Coach conclusion: ${activeResearchRound?.conclusion?.decision}` : activeResearch.length ? "Research evidence received" : "Waiting for research input"}</h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{hasResearchConclusion ? `${activeResearchRound?.conclusion?.buyerProductFit} eRank/EverBee remain supplemental research signals.` : activeResearch.length ? "Codex 會先核對 evidence quality，再決定是否需要第二輪 research 或可得出 keyword conclusion。" : "你只需到 Research 資料 upload CSV／Excel，或者貼上 eRank／EverBee cap 圖。"}</p>
           </div>
-          <button type="button" onClick={() => { if (hasKeywordDecision && !hasDraft) openActiveListingBrief(); else setOperationsTab(hasKeywordDecision ? "results" : "research"); }} className="shrink-0 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">{hasKeywordDecision ? hasDraft ? "查看 Listing Brief" : "開啟 Listing Brief" : "前往 Research 資料"}</button>
+          <button type="button" onClick={() => { if (researchBriefEligible && !hasDraft) openActiveListingBrief(); else setOperationsTab(researchBriefEligible ? "results" : "research"); }} className="min-h-11 shrink-0 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">{researchBriefEligible ? hasDraft ? "查看 Listing Brief" : "開啟 Listing Brief" : "前往 Research 資料"}</button>
         </div>
-        {hasKeywordDecision ? (
+        {hasResearchConclusion ? (
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl border border-[#D9E7DE] bg-white p-4"><p className="text-xs font-bold text-sage">Primary</p><p className="mt-1 text-base font-bold text-ink">{activeLoop?.primaryKeyword}</p></div>
-            <div className="rounded-2xl border border-[#D9E7DE] bg-white p-4"><p className="text-xs font-bold text-ink">Supporting</p><p className="mt-1 text-sm leading-5 text-muted">{activeLoop?.supportingKeywords?.join(", ") || "none recorded"}</p></div>
-            <div className="rounded-2xl border border-[#F1D8C6] bg-white p-4"><p className="text-xs font-bold text-brand">Avoid / weak fit</p><p className="mt-1 text-sm leading-5 text-muted">{activeLoop?.avoidKeywords?.join(", ") || "none recorded"}</p></div>
-            <p className="md:col-span-3 text-xs leading-5 text-muted">Confidence: low for SEO demand where screenshot OCR is partially ambiguous. Use this decision for draft wording only, not a performance claim.</p>
+            <div className="rounded-2xl border border-[#D9E7DE] bg-white p-4"><p className="text-xs font-bold text-sage">Decision</p><p className="mt-1 text-base font-bold text-ink">{activeResearchRound?.conclusion?.decision}</p></div>
+            <div className="rounded-2xl border border-[#D9E7DE] bg-white p-4"><p className="text-xs font-bold text-ink">Next action for this round</p><p className="mt-1 text-sm leading-5 text-muted">{analysisNextAction}</p></div>
+            <div className="rounded-2xl border border-[#F1D8C6] bg-white p-4"><p className="text-xs font-bold text-brand">Owner gate</p><p className="mt-1 text-sm leading-5 text-muted">{researchBriefEligible ? "Exact context approved" : "Locked"}</p></div>
+            <p className="md:col-span-3 text-xs leading-5 text-muted">This is Build-with-me research guidance, not Etsy policy or a demand, sales, revenue, or conversion guarantee.</p>
           </div>
         ) : (
           <div className="mt-5 rounded-2xl border border-[#D9E7DE] bg-white p-4 text-sm"><span className="font-bold text-ink">Evidence now: </span><span className="text-muted">{activeResearch.length} confirmed research file(s). {activeResearch.length ? "No manual keyword rows are needed." : "No research file has been confirmed yet."}</span></div>
@@ -901,21 +1291,25 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       <div role="status" className="mt-4 rounded-xl border border-sage/25 bg-[#E8F0E6] px-4 py-3 text-xs font-semibold text-sage">{notice}</div>
     </header>
 
-    <div hidden={operationsTab !== "results"} className="rounded-[26px] border border-sage/25 bg-[#F3F8F4] p-5 shadow-card" aria-label="Codex analysis and listing brief result">
+    <div data-etsy-route-target="results" hidden={operationsTab !== "results"} className="scroll-mt-24 rounded-[26px] border border-sage/25 bg-[#F3F8F4] p-5 shadow-card" aria-label="Codex analysis and listing brief result">
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-[#D9E7DE] bg-white p-4">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">Codex analysis result</p>
           <h3 className="mt-1 text-xl font-bold text-ink">Keyword decision · draft-only</h3>
-          {hasKeywordDecision ? <><p className="mt-3 text-xs font-bold text-sage">Primary</p><p className="mt-1 text-base font-bold text-ink">{activeLoop?.primaryKeyword}</p><p className="mt-3 text-xs font-bold text-ink">Supporting</p><p className="mt-1 text-sm text-muted">{activeLoop?.supportingKeywords?.join(", ") || "none recorded"}</p><p className="mt-3 text-xs font-bold text-brand">Avoid / weak fit</p><p className="mt-1 text-sm text-muted">{activeLoop?.avoidKeywords?.join(", ") || "none recorded"}</p><p className="mt-3 text-xs leading-5 text-muted">Confidence: low for SEO demand because screenshot metrics are partially OCR-ambiguous. The recommendation is safe for a draft, not a performance promise.</p></> : <p className="mt-3 text-sm text-muted">Codex has not reached a keyword conclusion yet. Open Research input to add CSV/XLSX or paste a screenshot.</p>}
+          {hasKeywordDecision ? <><p className="mt-3 text-xs font-bold text-sage">Primary</p><p className="mt-1 text-base font-bold text-ink">{activeLoop?.primaryKeyword}</p><p className="mt-3 text-xs font-bold text-ink">Supporting</p><p className="mt-1 text-sm text-muted">{activeLoop?.supportingKeywords?.join(", ") || "none recorded"}</p><p className="mt-3 text-xs font-bold text-brand">Avoid / weak fit</p><p className="mt-1 text-sm text-muted">{activeLoop?.avoidKeywords?.join(", ") || "none recorded"}</p><p className="mt-3 text-xs leading-5 text-muted">{researchBriefEligible ? "This exact research context is owner-approved. eRank/EverBee remain supplemental signals, not a sales or performance promise." : "Confidence is limited where screenshot metrics are ambiguous. The recommendation is safe for a draft, not a performance promise."}</p></> : <p className="mt-3 text-sm text-muted">Codex has not reached a keyword conclusion yet. Open Research input to add CSV/XLSX or paste a screenshot.</p>}
         </div>
-        <div className="rounded-2xl border border-copper/25 bg-white p-4">
+        {listingBriefResultSurfaceVisible ? <div className="rounded-2xl border border-copper/25 bg-white p-4">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">Listing Brief draft review</p>
           <h3 className="mt-1 text-xl font-bold text-ink">{activeDesignContent.designName}</h3>
-          <p className="mt-2 text-sm text-muted">A complete draft has title, checked tags, description, FAQ accuracy notes and social copy. It remains local until you choose to save it.</p>
+          <p className="mt-2 text-sm text-muted">A complete draft has title, checked tags, description, FAQ accuracy notes and social copy. {hasApprovedDraft ? "This exact package is approved for manual Etsy entry and remains local." : "It remains local until you choose to save or approve it."}</p>
           <div className="mt-3 rounded-xl bg-[#FBF7F2] p-3 text-xs leading-5 text-muted"><span className="font-bold text-ink">Draft title: </span>{activeDesignContent.draftTitle ?? "No draft title saved for this active design yet."}</div>
           <button type="button" onClick={openActiveListingBrief} className="mt-4 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Load active Listing Brief for review</button>
-          <p className="mt-2 text-xs text-muted">No Etsy account is connected. The next visible action after review is “Save local Codex draft”.</p>
-        </div>
+          <p className="mt-2 text-xs text-muted">{hasApprovedDraft ? "Next: copy the approved brief when you are ready for manual Etsy entry. No Etsy account is connected." : "No Etsy account is connected. The next visible action after review is “Save local Codex draft”."}</p>
+        </div> : <div className="rounded-2xl border border-copper/25 bg-[#FFF9F3] p-4" role="status">
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">Listing Brief draft review · locked</p>
+          <h3 className="mt-1 text-xl font-bold text-ink">Historical metadata only</h3>
+          <p className="mt-2 text-sm leading-6 text-muted">The latest exact research context is not approved, or the saved draft belongs to an older context. Draft title, package, open, copy, save, and approval controls remain hidden.</p>
+        </div>}
       </div>
     </div>
 
@@ -930,7 +1324,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         onSelectListing={(listingId) => { setWorkMode("listing-audit"); setSelectedListingId(listingId); }}
         onOpenAnalysis={() => setOperationsTab("analysis")}
         onOpenResearch={() => setOperationsTab("research")}
-        onCopy={() => void copy(sellerDecisionPacket(), "Seller decision brief copied. It remains local and draft-only.")}
+        onCopy={() => void copy(sellerDecisionPacket(), "Seller decision package copied with the Etsy System Prompt. It remains local and draft-only.")}
         control={decisionControl}
       />
           <aside className="mt-4 rounded-2xl border border-line bg-white p-4" aria-label="Dashboard V1 boundary and acceptance">
@@ -941,7 +1335,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       </details>
     </section>
 
-    <div hidden={operationsTab !== "research"}>
+    {operationsTab === "research" && workMode === "listing-audit" && <div data-etsy-route-target="research" className="scroll-mt-24" aria-label="Existing Listing research evidence">
       <EvidenceIntakeStepper
         state={state}
         selectedListingId={activeListingId}
@@ -965,7 +1359,7 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         onCloseReview={() => setReviewArtifactId(null)}
         onRemoveArtifact={(id) => void removeArtifact(id)}
       />
-    </div>
+    </div>}
     {false && <section hidden={operationsTab !== "research"} style={{ display: operationsTab === "research" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6" aria-label="Research evidence inbox">
       <div className="flex items-center gap-2 text-brand"><Upload size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Evidence Inbox</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Save dated source evidence before asking Codex for a decision</h3>
       <div className="mt-5 rounded-2xl border border-[#D9E7DE] bg-[#F3F8F4] p-4" aria-label="Journal listing fast lane"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-sage">Journal listing fast lane</p><p className="mt-1 text-sm font-semibold text-ink">Complete only the next missing input; no manual product-data retyping.</p></div><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-ink">{journalEvidenceGaps.length} evidence item{journalEvidenceGaps.length === 1 ? "" : "s"} remaining</span></div><div className="mt-4 grid gap-3 md:grid-cols-3"><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">1. Product facts</p><p className="mt-1 text-xs text-muted">Use a product-page/specification screenshot when available. Your earlier confirmed baseline can also be recorded as a removable owner attestation.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => prepareJournalEvidence("product-facts")} className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4]">Prepare product facts</button><button type="button" onClick={() => void attestJournalBaseline()} className="rounded-lg bg-[#E8F0E6] px-3 py-2 text-xs font-bold text-sage hover:bg-[#D9E7DE]">Record owner baseline</button></div></div><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">2. Cost &amp; fulfilment</p><p className="mt-1 text-xs text-muted">Paste a dated Google Sheet or supplier link, or add a cost export. No screenshot is needed for a stable official page.</p><button type="button" onClick={() => prepareJournalEvidence("cost-fulfilment")} className="mt-3 rounded-lg bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand">Prepare cost source</button></div><div className="rounded-xl border border-[#D9E7DE] bg-white p-3"><p className="text-xs font-bold text-ink">3. Keyword research</p><p className="mt-1 text-xs text-muted">Paste screenshot or upload eRank/EverBee CSV. The dashboard runs OCR after your confirmation.</p><button type="button" onClick={() => setOperationsTab("research")} className="mt-3 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4]">Open keyword research</button></div></div></div>
@@ -991,12 +1385,12 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
        </div>
     </section>}
 
-    <section hidden={operationsTab !== "analysis"} style={{ display: operationsTab === "analysis" ? undefined : "none" }} className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]" aria-label="Listing analysis evidence gate">
+    {operationsTab === "analysis" && workMode === "listing-audit" && <section data-etsy-route-target="analysis" className="scroll-mt-24 grid gap-5 xl:grid-cols-[1.15fr_0.85fr]" aria-label="Listing analysis evidence gate">
       <article className="rounded-[26px] border border-brand/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-brand"><ShieldCheck size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Listing Audit</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">First-party evidence gate</h3><div className="mt-4 grid gap-3 sm:grid-cols-3"><label className="text-xs font-semibold text-ink">Listing<select value={activeListingId} onChange={(event) => { setWorkMode("listing-audit"); setSelectedListingId(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="text-xs font-semibold text-ink">Start<input type="date" value={auditPeriod.start} onChange={(event) => setAuditPeriod((current) => ({ ...current, start: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label><label className="text-xs font-semibold text-ink">End<input type="date" value={auditPeriod.end} onChange={(event) => setAuditPeriod((current) => ({ ...current, end: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label></div>{selectedListing?.protected && <div className="mt-4 rounded-xl border border-brand/25 bg-[#FFF1E8] p-3 text-xs font-semibold text-brand">Protected listing: dashboard can audit and draft only. Do not change Etsy until you explicitly reopen this observation.</div>}<div className={`mt-4 rounded-2xl border p-4 ${auditGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{auditGaps.length ? `Still needed (${auditGaps.length})` : "Audit packet ready"}</div>{auditGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{auditGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">All required Etsy evidence is dated and owner-confirmed.</p>}</div><button type="button" onClick={() => void copy(auditPacket(), auditGaps.length ? "Missing-data request copied for Codex." : "Read-only audit packet copied for Codex.")} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Clipboard size={15} />{auditGaps.length ? "Copy missing-data request" : "Copy Codex Audit Packet"}</button></article>
       <article className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><FileDown size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Evidence health</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">What the dashboard can safely use</h3><dl className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">All artifacts</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.artifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Confirmed</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{eligibleArtifacts.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Products</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.products.length}</dd></div><div className="rounded-2xl border border-line bg-[#FBF7F2] p-3"><dt className="text-xs text-muted">Designs</dt><dd className="mt-1 font-display text-2xl font-bold text-ink">{state.designs.length}</dd></div></dl><p className="mt-4 text-xs leading-5 text-muted">Primary = Etsy or a platform’s own export. eRank/EverBee are supplemental. Cross-platform attribution remains an inference unless a tracked source confirms it.</p></article>
-    </section>
+    </section>}
 
-    <section hidden={operationsTab !== "library"} style={{ display: operationsTab === "library" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6">
+    <section data-etsy-route-target="library" hidden={operationsTab !== "library"} style={{ display: operationsTab === "library" ? undefined : "none" }} className="scroll-mt-24 rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6">
       <div className="flex items-center gap-2 text-brand"><LibraryBig size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Product + Design Library</span></div>
       <h3 className="mt-2 font-display text-2xl font-bold text-ink">Keep product truth attached to every design</h3>
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
@@ -1025,17 +1419,19 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
                   <div><dt className="text-muted">Design name</dt><dd className="font-semibold text-ink">{design.name}</dd></div>
                   <div><dt className="text-muted">Recipient</dt><dd className="font-semibold text-ink">{design.recipient}</dd></div>
                   <div><dt className="text-muted">Occasion</dt><dd className="font-semibold text-ink">{design.occasion}</dd></div>
+                  <div><dt className="text-muted">Visual cue</dt><dd className="font-semibold capitalize text-ink">{design.visualTone} artwork · {design.visualShape} layout</dd></div>
                 </dl>
                 {design.analysisText && <p className="mt-3 line-clamp-3 rounded-lg bg-[#FBF7F2] p-2 text-[11px] leading-4 text-muted">Detected message: {design.analysisText}</p>}
               </div>
             </div>
           )}
-          <label className="mt-3 block text-[11px] font-semibold text-muted">2. Product — the only choice required
+          <label className="mt-3 block text-[11px] font-semibold text-muted">2. Product — suggested automatically; confirm or change
             <select value={design.productId} onChange={(event) => updateDesign("productId", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm font-normal text-ink">
               <option value="">Choose the product this design applies to</option>
               {state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
+          {design.productSuggestionReason && <p className="mt-2 rounded-lg bg-[#E8F0E6] px-3 py-2 text-[11px] leading-4 text-sage">Suggested product: {design.productSuggestionReason}</p>}
           {design.previewDataUrl && (
             <details className="mt-3 rounded-xl border border-line bg-white">
               <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-bold text-muted">Adjust the suggestion only if needed</summary>
@@ -1050,37 +1446,75 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
         </div>
       </div>
       <div className="mt-5 grid gap-3 md:grid-cols-2">{state.products.map((item) => <article key={item.id} className="rounded-2xl border border-line bg-white p-4"><div className="font-bold text-ink">{item.name}</div><div className="mt-1 text-xs text-muted">{item.type} · {item.material || "material missing"} · {item.productionMethod || "production method missing"}</div><div className="mt-2 text-xs text-copper">Cost: {item.costSource || "missing"} · Fulfilment: {item.fulfilmentSource || "missing"}</div></article>)}{state.products.length === 0 && <p className="text-sm text-muted">No product cards yet. Add real product facts before starting a new listing.</p>}</div>
+      <section className="mt-5 rounded-2xl border border-copper/25 bg-[#FFF9F3] p-4" aria-label="Exact product proof">
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">Exact product proof</p>
+        <h4 className="mt-1 text-lg font-bold text-ink">Link the real product mockup without replacing the artwork</h4>
+        <p className="mt-1 text-xs leading-5 text-muted">For {activeDesign?.name ?? "the active design"}, attach the owner-provided Journal mockup. It is saved locally as visual proof and does not assert performance metrics.</p>
+        {activeDesign ? <div className="mt-3 flex flex-wrap items-center gap-3"><label className="inline-flex min-h-11 cursor-pointer items-center rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Attach exact product proof<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void attachProductProof(activeDesign, event)} className="sr-only" /></label><span className={`rounded-full border px-3 py-1.5 text-xs font-bold ${activeDesign.mockupStatus === "ready" ? "border-sage/25 bg-[#E8F0E6] text-sage" : "border-copper/25 bg-white text-copper"}`}>{activeDesign.mockupStatus === "ready" ? "Proof attached" : "Proof missing"}</span></div> : <p className="mt-2 text-xs text-muted">Select a saved design first.</p>}
+      </section>
+      <section className="mt-6" aria-label="Saved design library">
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-brand">Saved designs</p><h4 className="mt-1 font-display text-xl font-bold text-ink">Preview and manage each design without breaking its history</h4></div><span className="rounded-full bg-[#F8EDE4] px-3 py-1 text-xs font-bold text-copper">{activeDesigns.length} active · {archivedDesigns.length} archived</span></div>
+        {activeDesigns.length > 0 ? <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{activeDesigns.map((item) => {
+          const linkedProduct = state.products.find((productItem) => productItem.id === item.productId);
+          const suggestedProduct = state.products.find((productItem) => productItem.id === item.suggestedProductId);
+          const productMismatch = Boolean(suggestedProduct && item.suggestedProductId !== item.productId);
+          const isBusy = savedDesignBusyId === item.id;
+          return <article key={item.id} className={`rounded-2xl border bg-white p-4 ${item.id === activeDesign?.id ? "border-sage/45 ring-2 ring-sage/10" : "border-line"}`}>
+            <div className="flex min-h-48 items-center justify-center overflow-hidden rounded-xl border border-line bg-white p-2">{item.previewDataUrl ? <img src={item.previewDataUrl} alt={`Saved preview for ${item.name}`} className="max-h-60 w-full object-contain" /> : <p className="text-xs text-muted">No preview saved</p>}</div>
+            <div className="mt-3 flex flex-wrap items-start justify-between gap-2"><div><h5 className="font-bold text-ink">{item.name}</h5><p className="mt-1 text-xs text-muted">{item.recipient} · {item.occasion}</p></div>{item.id === activeDesign?.id && <span className="rounded-full bg-[#E8F0E6] px-2 py-1 text-[10px] font-bold text-sage">Working design</span>}</div>
+            <p className="mt-2 text-xs text-copper">{linkedProduct?.name ?? "Linked product missing"}</p>
+            <p className="mt-1 text-[11px] capitalize text-muted">{item.visualTone ?? "unknown"} artwork · {item.visualShape ?? "shape unknown"}</p>
+            {productMismatch && <p className="mt-2 rounded-lg bg-[#FFF1E8] px-3 py-2 text-[11px] leading-4 text-brand">New visual analysis suggests {suggestedProduct?.name}; the existing linked product was preserved.</p>}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" onClick={() => useSavedDesign(item)} disabled={isBusy || item.id === activeDesign?.id} className="min-h-10 rounded-lg bg-ink px-3 py-2 text-xs font-bold text-white hover:bg-brand disabled:cursor-not-allowed disabled:opacity-45">{item.id === activeDesign?.id ? "In use" : "Use in workflow"}</button>
+              <button type="button" onClick={() => void reanalyseSavedDesign(item)} disabled={isBusy || !item.previewDataUrl} className="min-h-10 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4] disabled:cursor-not-allowed disabled:opacity-45">{isBusy ? "Analysing…" : "Reanalyse"}</button>
+              <label className={`inline-flex min-h-10 cursor-pointer items-center rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4] ${isBusy ? "pointer-events-none opacity-45" : ""}`}>Replace image<input type="file" accept="image/png,image/jpeg,image/webp" disabled={isBusy} onChange={(event) => void replaceSavedDesignImage(item, event)} className="sr-only" /></label>
+              <button type="button" onClick={() => void archiveSavedDesign(item)} disabled={isBusy} className="min-h-10 rounded-lg px-3 py-2 text-xs font-bold text-brand hover:bg-[#FFF1E8] disabled:opacity-45">Archive</button>
+            </div>
+          </article>;
+        })}</div> : <p className="mt-4 rounded-xl border border-dashed border-line bg-white p-4 text-sm text-muted">No active saved designs. Restore one below or add a new design image.</p>}
+        {archivedDesigns.length > 0 && <details className="mt-4 rounded-xl border border-line bg-[#FBF7F2] p-4"><summary className="cursor-pointer text-sm font-bold text-ink">Archived designs ({archivedDesigns.length})</summary><div className="mt-3 grid gap-3 md:grid-cols-2">{archivedDesigns.map((item) => <article key={item.id} className="flex items-center gap-3 rounded-xl border border-line bg-white p-3">{item.previewDataUrl ? <img src={item.previewDataUrl} alt="" className="h-16 w-16 rounded-lg border border-line object-contain" /> : <div className="h-16 w-16 rounded-lg border border-line bg-[#FBF7F2]" />}<div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-ink">{item.name}</p><p className="mt-1 text-xs text-muted">Archived locally · history preserved</p></div><button type="button" onClick={() => void restoreSavedDesign(item)} className="min-h-10 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink hover:bg-[#F8EDE4]">Restore</button></article>)}</div></details>}
+      </section>
     </section>
 
-    <section hidden={operationsTab !== "results"} style={{ display: operationsTab === "results" ? undefined : "none" }} className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><Sparkles size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">New Listing Studio</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Build a research-ready brief, then ask Codex to draft</h3><div className="mt-5 grid gap-3 lg:grid-cols-2"><label className="text-xs font-semibold text-ink">Product<select value={listingStudio.productId} onChange={(event) => setListingStudio((current) => ({ ...current, productId: event.target.value, designId: "" }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select product</option>{state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Design<select value={listingStudio.designId} onChange={(event) => { setListingStudio((current) => ({ ...current, designId: event.target.value })); chooseActiveDesign(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select linked design</option>{state.designs.filter((item) => item.productId === listingStudio.productId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink lg:col-span-2">Positioning / gift promise<textarea value={listingStudio.positioning} onChange={(event) => setListingStudio((current) => ({ ...current, positioning: event.target.value }))} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Who is it for, what occasion, and why this product?" /></label><label className="text-xs font-semibold text-ink lg:col-span-2">5–15 seed keywords<textarea value={listingStudio.seeds} onChange={(event) => setListingStudio((current) => ({ ...current, seeds: event.target.value }))} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Comma-separated seed keywords for eRank, EverBee or Etsy Marketplace Insights research" /></label></div><div className={`mt-4 rounded-2xl border p-4 ${studioGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{studioGaps.length ? "Draft blocked until evidence is complete" : "Ready for a Codex draft package"}</div>{studioGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{studioGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">Copy the brief to Codex; its title, tags, description and social copy remain draft-only.</p>}</div><button type="button" onClick={() => void copy(listingPacket(), studioGaps.length ? "Blocked listing brief copied with its exact missing inputs." : "New listing brief copied for Codex draft generation.")} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Clipboard size={15} />Copy Listing Brief</button></section>
+    {visibleStudioEligible ? <section hidden={operationsTab !== "results"} style={{ display: operationsTab === "results" ? undefined : "none" }} className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><Sparkles size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">New Listing Studio</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Build a research-ready brief, then ask Codex to draft</h3><div className="mt-5 grid gap-3 lg:grid-cols-2"><label className="text-xs font-semibold text-ink">Product<select value={listingStudio.productId} onChange={(event) => setListingStudio((current) => ({ ...current, productId: event.target.value, designId: "" }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select product</option>{state.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink">Design<select value={listingStudio.designId} onChange={(event) => { setListingStudio((current) => ({ ...current, designId: event.target.value })); chooseActiveDesign(event.target.value); }} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select linked design</option>{activeDesigns.filter((item) => item.productId === listingStudio.productId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="text-xs font-semibold text-ink lg:col-span-2">Positioning / gift promise<textarea value={listingStudio.positioning} onChange={(event) => setListingStudio((current) => ({ ...current, positioning: event.target.value }))} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Who is it for, what occasion, and why this product?" /></label><label className="text-xs font-semibold text-ink lg:col-span-2">5 frozen research seeds<textarea readOnly value={listingStudio.seeds} className="mt-1.5 min-h-20 w-full rounded-xl border border-line bg-[#FBF7F2] px-3 py-2 text-sm font-normal" /></label></div><div className={`mt-4 rounded-2xl border p-4 ${studioGaps.length ? "border-copper/25 bg-[#F9EEE4]" : "border-sage/25 bg-[#E8F0E6]"}`}><div className="font-semibold text-ink">{studioGaps.length ? "Draft blocked until evidence is complete" : "Ready for a Codex draft package"}</div>{studioGaps.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted">{studioGaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-xs text-sage">Copy the brief to Codex; its title, tags, description and social copy remain draft-only.</p>}</div><button type="button" disabled={studioGaps.length > 0} onClick={() => void copy(listingPacket(), "New listing brief copied for Codex draft generation.")} className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand disabled:cursor-not-allowed disabled:opacity-40"><Clipboard size={15} />Copy Listing Brief</button></section> : <section hidden={operationsTab !== "results"} style={{ display: operationsTab === "results" ? undefined : "none" }} className="rounded-[26px] border border-copper/25 bg-[#FFF9F3] p-5 shadow-card sm:p-6" aria-label="Listing Studio locked"><p className="text-xs font-bold uppercase tracking-[0.14em] text-copper">New Listing Studio · locked</p><h3 className="mt-2 font-display text-xl font-bold text-ink">No Listing Brief content is available</h3><p className="mt-2 text-sm leading-6 text-muted">Positioning, frozen seeds, title/package input, copy, save, and approval controls stay hidden until the active latest exact design, product, round, and seed version is owner-approved.</p></section>}
 
     <aside hidden={operationsTab !== "results"} className="rounded-2xl border border-copper/25 bg-[#F9EEE4] p-4" aria-label="Historical tag reference"><div className="text-xs font-bold uppercase tracking-[0.12em] text-copper">Listing and tag reference</div><p className="mt-1 text-sm font-semibold text-ink">Every Listing Brief now carries the Etsy Sonnet historical keyword reference.</p><p className="mt-1 text-xs leading-5 text-muted">Use it to recognise relevant lanes and rejected terms, then let current dated research and product facts decide. Tags remain draft-only and must be 20 characters or fewer.</p></aside>
-    <aside hidden={operationsTab !== "results"} className="rounded-2xl border border-line bg-panel p-4" aria-label="Draft tag checker"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-xs font-bold uppercase tracking-[0.12em] text-brand">Draft tag checker</div><p className="mt-1 text-sm font-semibold text-ink">Paste Codex’s draft tags once; the dashboard checks them before owner approval.</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${tagIssues.length ? "bg-[#FFF1E8] text-brand" : "bg-[#E8F0E6] text-sage"}`}>{tagIssues.length ? `${tagIssues.length} issue(s)` : draftTags.length ? "Ready to review" : "Paste tags"}</span></div><label className="mt-3 block text-xs font-semibold text-ink">Draft tags — one per line or comma-separated<textarea value={listingStudio.tags} onChange={(event) => setListingStudio((current) => ({ ...current, tags: event.target.value }))} className="mt-1.5 min-h-24 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Paste up to 13 draft tags from Codex" /></label><div className="mt-2 text-xs text-muted">{draftTags.length ? `${draftTags.length} tag(s) pasted` : "Optional until Codex has created a draft."} Etsy allows up to 13 tags, each 20 characters or fewer.</div>{tagIssues.length > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand">{tagIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}</aside>
+    {visibleStudioEligible ? <aside hidden={operationsTab !== "results"} className="rounded-2xl border border-line bg-panel p-4" aria-label="Draft tag checker"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-xs font-bold uppercase tracking-[0.12em] text-brand">Draft tag checker</div><p className="mt-1 text-sm font-semibold text-ink">Paste Codex’s draft tags once; the dashboard checks them before owner approval.</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${tagIssues.length ? "bg-[#FFF1E8] text-brand" : "bg-[#E8F0E6] text-sage"}`}>{tagIssues.length ? `${tagIssues.length} issue(s)` : draftTags.length ? "Ready to review" : "Paste tags"}</span></div><label className="mt-3 block text-xs font-semibold text-ink">Draft tags — one per line or comma-separated<textarea value={listingStudio.tags} onChange={(event) => setListingStudio((current) => ({ ...current, tags: event.target.value }))} className="mt-1.5 min-h-24 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Paste up to 13 draft tags from Codex" /></label><div className="mt-2 text-xs text-muted">{draftTags.length ? `${draftTags.length} tag(s) pasted` : "Optional until Codex has created a draft."} Etsy allows up to 13 tags, each 20 characters or fewer.</div>{tagIssues.length > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-brand">{tagIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}</aside> : <aside hidden={operationsTab !== "results"} className="rounded-2xl border border-copper/25 bg-[#FFF9F3] p-4" aria-label="Draft tag checker locked"><div className="text-xs font-bold uppercase tracking-[0.12em] text-copper">Draft tag checker · locked</div><p className="mt-1 text-sm text-muted">Draft tags remain hidden with the Listing Brief package until exact owner approval.</p></aside>}
     <aside hidden={operationsTab !== "results"} className="rounded-2xl border border-sage/25 bg-panel p-4" aria-label="Saved Codex listing drafts">
       <div className="text-xs font-bold uppercase tracking-[0.12em] text-sage">Saved Codex drafts</div>
-      <p className="mt-1 text-sm font-semibold text-ink">Paste a complete Codex listing package once, save it locally, then approve only for manual Etsy entry.</p>
-      <label className="mt-3 block text-xs font-semibold text-ink">Complete Codex listing draft<textarea value={listingStudio.packageText} onChange={(event) => setListingStudio((current) => ({ ...current, packageText: event.target.value }))} className="mt-1.5 min-h-32 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Paste the approved title, tags, description, FAQ and notes from Codex" /></label>
-      <button type="button" onClick={() => void saveListingDraft()} className="mt-3 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Save local Codex draft</button>
-      <p className="mt-2 text-xs text-muted">Saving creates a local record only. Approval never publishes to Etsy.</p>
+      {visibleStudioEligible ? <>
+        <p className="mt-1 text-sm font-semibold text-ink">Paste a complete Codex listing package once, save it locally, then approve only for manual Etsy entry.</p>
+        <label className="mt-3 block text-xs font-semibold text-ink">Complete Codex listing draft<textarea value={listingStudio.packageText} onChange={(event) => setListingStudio((current) => ({ ...current, packageText: event.target.value }))} className="mt-1.5 min-h-32 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" placeholder="Paste the approved title, tags, description, FAQ and notes from Codex" /></label>
+        <button type="button" onClick={() => void saveListingDraft()} className="mt-3 min-h-11 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand">Save local Codex draft</button>
+        <p className="mt-2 text-xs text-muted">Saving creates a local record only. Approval never publishes to Etsy.</p>
+      </> : <p className="mt-2 rounded-xl border border-copper/25 bg-[#FFF9F3] p-3 text-sm leading-6 text-muted" role="status">Current studio title/package input, save, copy, and approval controls stay hidden. Saved records below reveal a package only for the active current draft when its latest exact research context is owner-approved.</p>}
       {state.listingDrafts.length > 0 && (
         <div className="mt-4 space-y-2">
           {state.listingDrafts.map((draft) => {
-            const linkedLoop = state.keywordResearchLoops.find((item) => item.designId === draft.designId);
-            const approvalSeeds = linkedLoop?.queries?.length ? linkedLoop.queries : draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DEMO_SEEDS : [];
+            const draftSurfaceAccess = deriveListingBriefSurfaceAccess(state, draft.designId, draft.productId, draft);
+            const draftResearchRound = draftSurfaceAccess.latestContext ? state.researchRounds.find((round) => round.id === draftSurfaceAccess.latestContext?.roundId) : undefined;
+            const draftResearchEligible = draftSurfaceAccess.exactApproved;
+            const draftMatchesLatestResearch = draftSurfaceAccess.draftMatchesExactContext;
+            const approvalSeeds = draftResearchRound?.seedSnapshot ?? (draft.designId === DEFAULT_ACTIVE_DESIGN_ID ? DEMO_SEEDS : []);
             const approvalIssues = collectListingDraftApprovalIssues(state, draft, approvalSeeds);
             const isApproved = draft.status === "approved-for-manual-entry";
-            const isCurrentDraft = deriveActiveDraftState(state.listingDrafts, draft.designId).currentDraft?.id === draft.id;
-            const canCopyApprovedDraft = isCurrentDraft && isApproved && approvalIssues.length === 0;
+            const isCurrentDraft = draftSurfaceAccess.draftIsCurrent;
+            const canRevealSavedPackage = Boolean(researchBriefEligible
+              && activeDesign?.id === draft.designId
+              && activeDesign.productId === draft.productId
+              && draftSurfaceAccess.canRevealDraft);
+            const canCopyApprovedDraft = canRevealSavedPackage && isApproved && approvalIssues.length === 0;
             return (
               <article key={draft.id} className="rounded-xl border border-line bg-[#FBF7F2] p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div><div className="font-semibold text-ink">{state.designs.find((item) => item.id === draft.designId)?.name ?? draft.designId}</div><div className="mt-1 text-xs text-muted">Saved {draft.createdAt.slice(0, 10)} · {draft.tags.length} tags · {draft.evidenceIds.length} linked evidence record(s)</div></div>
                   <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${canCopyApprovedDraft ? "bg-[#E8F0E6] text-sage" : "bg-[#F9EEE4] text-copper"}`}>{!isCurrentDraft ? "Superseded draft" : canCopyApprovedDraft ? "Manual entry approved" : isApproved ? "Approval blocked by current checks" : "Draft"}</span>
                 </div>
-                <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-ink">View saved package</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-white p-2 font-sans text-[11px] leading-4 text-muted">{draft.sourcePacket}</pre></details>
-                {approvalIssues.length > 0 && <p className="mt-2 text-xs leading-5 text-brand">Owner Gate: {approvalIssues[0]}</p>}
+                {canRevealSavedPackage ? <details className="mt-2"><summary className="cursor-pointer text-xs font-semibold text-ink">View saved package</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-white p-2 font-sans text-[11px] leading-4 text-muted">{draft.sourcePacket}</pre></details> : <p className="mt-2 rounded-lg border border-copper/20 bg-white px-3 py-2 text-xs leading-5 text-muted">Historical metadata only · saved title and package are hidden because this is not the current draft for the latest exact approved context.</p>}
+                {canRevealSavedPackage && approvalIssues.length > 0 && <p className="mt-2 text-xs leading-5 text-brand">Owner Gate: {approvalIssues[0]}</p>}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {isCurrentDraft && !isApproved && <button type="button" onClick={() => void approveListingDraft(draft.id)} className="rounded-lg bg-[#E8F0E6] px-3 py-1.5 text-xs font-bold text-sage">Approve for manual Etsy entry</button>}
+                  {canRevealSavedPackage && !isApproved && draftResearchEligible && draftMatchesLatestResearch && <button type="button" onClick={() => void approveListingDraft(draft.id)} className="min-h-11 rounded-lg bg-[#E8F0E6] px-3 py-1.5 text-xs font-bold text-sage">Approve for manual Etsy entry</button>}
                   {canCopyApprovedDraft && <button type="button" onClick={() => void copy(draft.sourcePacket, "This exact approved Listing Brief was copied for later manual Etsy entry.")} className="rounded-lg bg-ink px-3 py-1.5 text-xs font-bold text-white hover:bg-brand">Copy this approved draft</button>}
                   <button type="button" onClick={() => void removeListingDraft(draft.id)} className="rounded-lg px-3 py-1.5 text-xs font-bold text-brand hover:bg-[#FFF1E8]">Remove local draft</button>
                 </div>
@@ -1091,8 +1525,9 @@ export default function EtsyOperationsHub({ initialTab = "today", presentationOn
       )}
     </aside>
     <section hidden={operationsTab !== "social"} style={{ display: operationsTab === "social" ? undefined : "none" }} className="rounded-[26px] border border-line bg-panel p-5 shadow-card sm:p-6"><div className="flex items-center gap-2 text-copper"><CheckCircle2 size={18} /><span className="text-xs font-semibold uppercase tracking-[0.16em]">Social Campaign Tracker</span></div><h3 className="mt-2 font-display text-2xl font-bold text-ink">Phase 2: record content and outcomes without claiming attribution</h3><div className="mt-5 grid gap-3 md:grid-cols-3">{(["contentId", "assetName", "publishedOn", "copy", "cta", "url", "impressions", "clicks", "saves"] as const).map((key) => <label key={key} className="text-xs font-semibold text-ink">{key.replace(/([A-Z])/g, " $1")}<input type={key === "publishedOn" ? "date" : "text"} value={post[key]} onChange={(event) => setPost((current) => ({ ...current, [key]: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal" /></label>)}<label className="text-xs font-semibold text-ink">Platform<select value={post.platform} onChange={(event) => setPost((current) => ({ ...current, platform: event.target.value as ContentPost["platform"] }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option>Instagram</option><option>Pinterest</option><option>Facebook</option><option>Threads</option></select></label><label className="text-xs font-semibold text-ink">Target listing<select value={post.listingId} onChange={(event) => setPost((current) => ({ ...current, listingId: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option value="">Select listing</option>{state.listings.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="text-xs font-semibold text-ink">Outcome<select value={post.outcome} onChange={(event) => setPost((current) => ({ ...current, outcome: event.target.value as ContentPost["outcome"] }))} className="mt-1.5 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal"><option>Attribution unconfirmed</option><option>Repeat</option><option>Improve</option><option>Stop</option></select></label></div><button type="button" onClick={() => void addPost()} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand"><Plus size={15} />Save social post</button><div className="mt-5 overflow-x-auto rounded-2xl border border-line"><table className="w-full min-w-[720px] text-left text-xs"><thead className="bg-[#F8F3ED] text-muted"><tr><th className="px-4 py-3">Content</th><th className="px-4 py-3">Platform</th><th className="px-4 py-3">Target</th><th className="px-4 py-3">Signals</th><th className="px-4 py-3">Decision</th></tr></thead><tbody>{state.posts.length === 0 ? <tr><td colSpan={5} className="px-4 py-5 text-muted">No social posts recorded. Likes and followers are intentionally not decision metrics here.</td></tr> : state.posts.map((item) => <tr key={item.id} className="border-t border-line"><td className="px-4 py-3 font-semibold text-ink">{item.contentId}<div className="mt-1 font-normal text-muted">{item.publishedOn}</div></td><td className="px-4 py-3">{item.platform}</td><td className="px-4 py-3">{item.listingId}</td><td className="px-4 py-3">Impressions {item.impressions || "missing"} · Clicks {item.clicks || "missing"} · Saves {item.saves || "missing"}</td><td className="px-4 py-3 font-semibold text-copper">{item.outcome}</td></tr>)}</tbody></table></div></section>
-    <div hidden={operationsTab !== "research"}><KeywordResearchWorkspace selectedDesignId={activeDesignId} onSelectDesign={chooseActiveDesign} /></div>
-    <div hidden={operationsTab !== "library"}><ProductFactsGate state={state} onCommit={commit} /></div>
+    {operationsTab === "research" && workMode === "product-development" && <div data-etsy-route-target="research" className="scroll-mt-24" aria-label="Product Development keyword research"><KeywordResearchWorkspace selectedDesignId={activeDesignId} onSelectDesign={chooseActiveDesign} onFailClosedStateChange={setState} onStageRequestChange={setResearchStageRequest} /></div>}
+    <div hidden={operationsTab !== "library"}><ProductFactsGate state={state} onCommit={commit} onRecordBaseline={recordOwnerBaseline} /></div>
+    </div>
     </>}
   </section>;
 }

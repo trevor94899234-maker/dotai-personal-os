@@ -25,6 +25,26 @@ export type EvidenceArtifact = {
   dataUrl?: string;
   /** A read-only source reference when the owner uses a published product or supplier page instead of a file export. */
   sourceUrl?: string;
+  /** Optional Product Development research lineage; legacy evidence remains valid without it. */
+  researchRoundId?: string;
+  researchSeedVersion?: string;
+  researchOriginatingQueries?: string[];
+  researchSourceDate?: string;
+  researchFreshnessPolicy?: ResearchFreshnessPolicy;
+  /** Additive Results Inbox batch lineage. Legacy artifacts deliberately remain valid without it. */
+  researchBatchId?: string;
+  researchArtifactOrdinal?: number;
+  researchSeedIds?: string[];
+  researchSeedOverrideId?: string;
+  researchArtifactStatus?: ResearchArtifactStatus;
+  researchCapturedAt?: string;
+  researchCapturedAtHk?: string;
+  researchRawRecovery?: ResearchRawRecovery;
+  rawFingerprint?: string;
+  /** Exact Individual task target. Filename and upload order have no authority. */
+  researchQueryTaskId?: string;
+  researchOriginatingQuery?: string;
+  researchIntentDimensionId?: string;
 };
 
 export type ParsedEvidenceFile = Pick<EvidenceArtifact, "rows" | "headers" | "metrics" | "contentText">;
@@ -350,6 +370,27 @@ export type Design = {
   previewDataUrl?: string;
   analysisText?: string;
   analysisBasis?: "local-ocr" | "safe-default";
+  visualTone?: DesignVisualTone;
+  visualShape?: DesignVisualShape;
+  aspectRatio?: number;
+  productSuggestionReason?: string;
+  suggestedProductId?: string;
+  archivedAt?: string;
+};
+
+export type DesignVisualTone = "dark" | "light" | "mixed" | "unknown";
+export type DesignVisualShape = "square" | "rectangular";
+export type DesignVisualProfile = {
+  tone: DesignVisualTone;
+  shape: DesignVisualShape;
+  aspectRatio: number;
+};
+
+export type DesignProductRecommendation = {
+  productId: string;
+  productKind: "journal" | "acrylic";
+  confidence: "high" | "medium";
+  reason: string;
 };
 
 export type DesignSuggestion = {
@@ -361,6 +402,7 @@ export type DesignSuggestion = {
 };
 
 const DESIGN_RECIPIENT_RULES: Array<[RegExp, string]> = [
+  [/\bpastor\b|\bminister\b|\breverend\b|牧師|牧者/i, "Pastor"],
   [/\bgranddaughter\b|孫女/i, "Granddaughter"],
   [/\bgrandson\b|孫仔|孫兒/i, "Grandson"],
   [/\bdaughter(?:\s+in\s+law)?\b|女兒|媳婦/i, "Daughter"],
@@ -376,6 +418,7 @@ const DESIGN_RECIPIENT_RULES: Array<[RegExp, string]> = [
 ];
 
 const DESIGN_OCCASION_RULES: Array<[RegExp, string]> = [
+  [/\bpastor(?:'s)?\s+appreciation\b|\bpastor\b|\bminister\b|\breverend\b|牧師|牧者/i, "Pastor appreciation"],
   [/mother'?s\s+day|母親節/i, "Mother's Day"],
   [/father'?s\s+day|父親節/i, "Father's Day"],
   [/valentine'?s\s+day|情人節/i, "Valentine's Day"],
@@ -406,6 +449,45 @@ export function inferDesignSuggestion(fileName: string, ocrText: string): Design
     detectedText,
     basis: detectedText ? "local-ocr" : "safe-default",
   };
+}
+
+export function recommendDesignProduct(products: Product[], profile: DesignVisualProfile): DesignProductRecommendation | null {
+  const journal = products.find((product) => /journal/i.test(`${product.name} ${product.type}`));
+  const acrylic = products.find((product) => /acrylic|plaque|display/i.test(`${product.name} ${product.type}`));
+  let product: Product | undefined;
+  let productKind: DesignProductRecommendation["productKind"];
+  let confidence: DesignProductRecommendation["confidence"];
+  let reason: string;
+
+  if (profile.tone === "dark" && profile.shape === "rectangular") {
+    product = journal;
+    productKind = "journal";
+    confidence = "high";
+    reason = "Dark artwork and a rectangular layout usually fit a printed journal.";
+  } else if (profile.tone === "light" && profile.shape === "square") {
+    product = acrylic;
+    productKind = "acrylic";
+    confidence = "high";
+    reason = "Light artwork and a square layout usually fit an LED acrylic display.";
+  } else if (profile.tone === "dark" || profile.shape === "rectangular") {
+    product = journal;
+    productKind = "journal";
+    confidence = "medium";
+    reason = profile.tone === "dark"
+      ? "Dark artwork usually prints more clearly on a journal."
+      : "A rectangular layout usually fits a journal.";
+  } else if (profile.tone === "light" || profile.shape === "square") {
+    product = acrylic;
+    productKind = "acrylic";
+    confidence = "medium";
+    reason = profile.tone === "light"
+      ? "Light artwork usually stands out on an LED acrylic display."
+      : "A square layout usually fits an acrylic display.";
+  } else {
+    return null;
+  }
+
+  return product ? { productId: product.id, productKind, confidence, reason } : null;
 }
 export type Listing = { id: string; title: string; protected: boolean; observationEnd?: string };
 export type SellerDecisionMetric = { label: string; value: number | null; status: MetricStatus };
@@ -454,7 +536,9 @@ export type EvidenceIntakeStep = {
   detail: string;
 };
 export type ContentPost = { id: string; contentId: string; platform: "Instagram" | "Pinterest" | "Facebook" | "Threads"; listingId: string; publishedOn: string; assetName: string; copy: string; cta: string; url: string; impressions: string; clicks: string; saves: string; outcome: "Repeat" | "Improve" | "Stop" | "Attribution unconfirmed" };
-export type OwnerGate = { id: string; subject: string; status: "draft" | "need-evidence" | "approved-for-draft"; evidenceIds: string[]; missing: string[]; nextStep: string };
+export type ResearchContext = { designId: string; productId: string; roundId: string; seedVersion: string };
+export type ResearchOwnerGateContext = ResearchContext & { gateType: "research-to-listing-brief"; approvedAt: string };
+export type OwnerGate = { id: string; subject: string; status: "draft" | "need-evidence" | "approved-for-draft"; evidenceIds: string[]; missing: string[]; nextStep: string; researchContext?: ResearchOwnerGateContext };
 export type KeywordRole = "seed" | "primary" | "supporting" | "avoid";
 export type KeywordResearchStatus = "to-research" | "evidence-added" | "shortlisted" | "avoid";
 export type KeywordResearch = { id: string; designId: string; phrase: string; source: "eRank" | "EverBee" | "Etsy Marketplace Insights" | "Other"; evidenceReference: string; demand: string; competition: string; relevance: "High" | "Medium" | "Low" | "Unrated"; status: KeywordResearchStatus; role: KeywordRole; note: string; createdAt: string };
@@ -470,8 +554,259 @@ export type KeywordResearchLoop = {
   avoidKeywords?: string[];
   updatedAt: string;
 };
-export type ListingDraft = { id: string; productId: string; designId: string; sourcePacket: string; tags: string[]; evidenceIds: string[]; status: "draft" | "approved-for-manual-entry"; createdAt: string; approvedAt?: string };
-export type EtsyOperationsState = { version: 1; migratedLegacy: boolean; artifacts: EvidenceArtifact[]; products: Product[]; designs: Design[]; listings: Listing[]; posts: ContentPost[]; gates: OwnerGate[]; keywordResearch: KeywordResearch[]; keywordResearchLoops: KeywordResearchLoop[]; listingDrafts: ListingDraft[] };
+export type ListingDraft = { id: string; productId: string; designId: string; sourcePacket: string; tags: string[]; evidenceIds: string[]; status: "draft" | "approved-for-manual-entry"; createdAt: string; approvedAt?: string; researchContext?: ResearchContext };
+export type ResearchTruthStatus = "confirmed" | "confirmed-zero" | "missing" | "invalid" | "source-unknown";
+export type ResearchField<T> = { raw: string; parsed: T | null; status: ResearchTruthStatus };
+export function researchTruthStatusLabel(status: ResearchTruthStatus) {
+  return status === "source-unknown" ? "source reported Unknown" : status;
+}
+export type ResearchSource = "erank" | "everbee";
+export type ResearchRoundStatus = "draft-preview" | "saved-awaiting-review" | "next-round-needed" | "conclusion-ready" | "owner-approved";
+export type ResearchDecision = "retain" | "defer" | "next-round";
+export type ResearchFitAssessment = "supported" | "weak" | "missing";
+export type ResearchFitReview = {
+  buyerOccasionFit: ResearchFitAssessment;
+  productFit: ResearchFitAssessment;
+  reviewedBy: "owner";
+  reviewedAt: string;
+};
+export type ResearchConclusion = {
+  decision: ResearchDecision;
+  buyerProductFit: string;
+  evidenceBasis: string[];
+  blockingTruth: string[];
+  nextAction: string;
+  reviewSignal: string;
+  createdAt: string;
+};
+export type ResearchActionKind = "close-research" | "collect-missing-input" | "propose-gap-round";
+export type ResearchIntentAnchorOrigin = "round-1-seed" | "owner-approved-gap";
+export type ResearchIntentAnchor = {
+  id: string;
+  roundId: string;
+  ordinal: number;
+  query: string;
+  intentDimensionId: string;
+  origin: ResearchIntentAnchorOrigin;
+  sourceGapCandidateId?: string;
+  sourceTargetDimensionId?: string;
+  sourceGapAnalysisId?: string;
+};
+export type RequiredIntentDimension = {
+  id: string;
+  label: string;
+  ordinal: number;
+  definition: string;
+  anchorIds: string[];
+};
+export type ResearchQueryTaskStatus = "pending" | "ready" | "received" | "error";
+export type ResearchQueryTask = ResearchContext & {
+  id: string;
+  selectedOrdinal: number;
+  query: string;
+  normalizedQuery: string;
+  intentDimensionId: string;
+  anchorId?: string;
+  source: ResearchSource;
+  status: ResearchQueryTaskStatus;
+  artifactIds: string[];
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type GapCandidateDraft = { query: string; targetDimension: string; extensionLogic: string; supportingRowIds: string[] };
+export type ResearchSupportRowLedgerEntry = {
+  rowId: string;
+  phrase: string;
+  originatingQuery: string;
+  intentDimensionId: string;
+  researchQueryTaskId: string;
+  confirmedSearchVolume: number | null;
+  confirmedCompetition: number | null;
+};
+export const RESEARCH_SUPPORT_ROW_LEDGER_LIMIT = 25;
+export type GapCandidate = GapCandidateDraft & {
+  id: string;
+  rawOrdinal: number;
+  normalizedQuery: string;
+  supportingEligibleRowCount: number;
+  confirmedSearchVolume: number | null;
+  confirmedCompetition: number | null;
+};
+export type GapCandidateRejectionReason =
+  | "raw-count-not-25" | "completed-query-duplicate" | "candidate-duplicate"
+  | "covered-target" | "unknown-target" | "missing-extension-logic"
+  | "empty-support" | "missing-support" | "inactive-support"
+  | "ineligible-support" | "unstructured-support" | "cross-context-support"
+  | "non-completed-support" | "support-covers-target" | "non-researchable-phrase";
+export type GapCandidateRejection = {
+  reason: GapCandidateRejectionReason;
+  rawOrdinal: number;
+  normalizedQuery?: string;
+  targetDimension?: string;
+  supportingRowIds: string[];
+};
+export type GapCandidateRejectionAudit = { rawCount: number; acceptedRawOrdinals: number[]; rejections: GapCandidateRejection[] };
+export type ResearchGapAnalysisOrigin = "manual-json" | "in-product-suggestion";
+export type ResearchGapAnalysisAttempt = ResearchContext & {
+  id: string;
+  rawDrafts: GapCandidateDraft[];
+  rejectionAudit: GapCandidateRejectionAudit;
+  rankedCandidates: GapCandidate[];
+  status: "invalid" | "insufficient-valid" | "proposal-ready";
+  createdAt: string;
+  origin?: ResearchGapAnalysisOrigin;
+};
+export type AdaptiveResearchAction = {
+  persistedDecision: ResearchDecision;
+  actionKind: ResearchActionKind;
+  reasonCodes: string[];
+  nextAction: string;
+  coverage: Array<{ dimensionId: string; covered: boolean; rowIds: string[] }>;
+  repeatRate: number;
+  blockingInput?: string;
+  gapProposal?: GapCandidate[];
+  rejectionAudit?: GapCandidateRejectionAudit;
+};
+export type ResearchRound = {
+  id: string;
+  designId: string;
+  productId: string;
+  roundNumber: number;
+  seedVersion: string;
+  seedSnapshot: [string, string, string, string, string];
+  /** New rounds freeze identity as well as display text. Missing ledgers are historical/unmapped. */
+  seedLedger?: ResearchSeedLedgerEntry[];
+  status: ResearchRoundStatus;
+  artifactIds: string[];
+  conclusion?: ResearchConclusion;
+  fitReview?: ResearchFitReview;
+  /** Optional adaptive funnel state. Historical rounds remain valid without it. */
+  intentAnchors?: ResearchIntentAnchor[];
+  requiredIntentDimensions?: RequiredIntentDimension[];
+  adaptiveAction?: AdaptiveResearchAction;
+  sourceRoundId?: string;
+  sourceGapAnalysisId?: string;
+  adaptiveOwnerApproval?: {
+    approvedBy: "owner";
+    approvedAt: string;
+    selectedGapCandidateIds: string[];
+  };
+  ownerGateId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type ResearchSeedLedgerEntry = { id: string; ordinal: number; query: string };
+export type ResearchActiveInputLedgerEntry = ResearchSeedLedgerEntry & {
+  anchorId: string;
+  intentDimensionId: string;
+  origin: ResearchIntentAnchorOrigin;
+};
+
+/**
+ * The frozen queries describe the research lane; a saved design record only
+ * supplies the stable identity used to keep evidence isolated.
+ */
+export function researchFocusLabelForRound(round: Pick<ResearchRound, "seedSnapshot" | "intentAnchors"> | undefined) {
+  const persistedQueries = Array.isArray(round?.intentAnchors) && round.intentAnchors.length >= 5
+    ? round.intentAnchors.map((anchor) => anchor.query)
+    : [];
+  const queries = persistedQueries.length ? persistedQueries : (round?.seedSnapshot ?? []);
+  const hasPastor = queries.some((query) => /\bpastor\b/i.test(query));
+  const hasWorshipLeader = queries.some((query) => /\bworship\s+leader\b/i.test(query));
+  if (hasPastor && hasWorshipLeader) return "Pastor + worship leader";
+  if (hasPastor) return "Pastor";
+  if (hasWorshipLeader) return "Worship leader";
+  return queries.length ? "Current frozen research lane" : "No active research focus";
+}
+
+export type ResearchBatchStatus = "draft-preview" | "saved" | "partial" | "conflicting";
+export type ResearchArtifactStatus = "preview" | "ready" | "saved" | "visual-review-only" | "duplicate-audited" | "conflicting" | "retry-needed" | "raw-reattach-required";
+export type ResearchRawRecovery = {
+  kind: "screenshot" | "workbook" | "text";
+  persisted: boolean;
+  thumbnailDataUrl?: string;
+  reattachAction?: "file" | "paste";
+  message?: string;
+};
+export type ResearchBatch = {
+  id: string;
+  designId: string;
+  productId: string;
+  roundId: string;
+  seedVersion: string;
+  seedLedger: ResearchSeedLedgerEntry[];
+  selectedSeedIds: string[];
+  artifactIds: string[];
+  status: ResearchBatchStatus;
+  createdAt: string;
+  createdAtHk: string;
+  updatedAt: string;
+};
+export type ResearchFreshness = "not-assessed" | "current" | "stale";
+export type ResearchFreshnessPolicy = { scope: string; maxAgeDays: number; basis: string; effectiveDate: string };
+export type ResearchFieldConfirmation = {
+  field: "phrase" | "searchVolume" | "competition" | "trend" | "relevanceScore";
+  rawFieldOrKey: string;
+  confirmedValue: string | number;
+  confirmedBy: "owner";
+  confirmedAt: string;
+};
+export type ResearchEvidenceMedium = "structured-export" | "structured-text" | "ocr-image";
+export type ResearchResultRow = {
+  id: string;
+  roundId: string;
+  artifactId: string;
+  designId: string;
+  productId: string;
+  seedVersion: string;
+  researchBatchId?: string;
+  originatingSeedId?: string;
+  originatingQuery: string;
+  researchQueryTaskId?: string;
+  researchOriginatingQuery?: string;
+  intentDimensionId?: string;
+  source: ResearchSource;
+  sourceDate: string;
+  phrase: ResearchField<string>;
+  searchVolume: ResearchField<number>;
+  competition: ResearchField<number>;
+  trend: ResearchField<number>;
+  relevanceScore: ResearchField<number>;
+  flags: {
+    stale: boolean;
+    freshness: ResearchFreshness;
+    ageDays: number | null;
+    sourceDateIssue?: "blank" | "malformed" | "future";
+    unconfirmed: boolean;
+    unmapped: boolean;
+    ocrOnly: boolean;
+    duplicate: boolean;
+    conflicting: boolean;
+  };
+  fieldConfirmations: ResearchFieldConfirmation[];
+  evidenceMedium: ResearchEvidenceMedium;
+  lineageKey: string;
+  contentFingerprint: string;
+  /** Historical evidence retained after a same-value, higher-quality row becomes authoritative for decisions. */
+  supersededByRowId?: string;
+  createdAt: string;
+};
+export type ResearchDuplicateAuditEvent = {
+  id: string;
+  existingArtifactId: string;
+  existingRowId: string;
+  fingerprint: string;
+  attemptedFileOrSource: string;
+  attemptedAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  researchBatchId?: string;
+  attemptedArtifactId?: string;
+  kind?: "row" | "artifact";
+};
+export type ResearchRecoveryRecord = { id: string; collection: string; rawPayload: unknown; recoveredAt: string; message: string };
+export type EtsyOperationsState = { version: 1; migratedLegacy: boolean; artifacts: EvidenceArtifact[]; products: Product[]; designs: Design[]; listings: Listing[]; posts: ContentPost[]; gates: OwnerGate[]; keywordResearch: KeywordResearch[]; keywordResearchLoops: KeywordResearchLoop[]; listingDrafts: ListingDraft[]; researchRounds: ResearchRound[]; researchBatches: ResearchBatch[]; researchResultRows: ResearchResultRow[]; researchQueryTasks: ResearchQueryTask[]; researchGapAnalysisAttempts: ResearchGapAnalysisAttempt[]; researchDuplicateAuditEvents: ResearchDuplicateAuditEvent[]; researchFreshnessPolicies: ResearchFreshnessPolicy[]; researchRecoveryErrors?: string[]; researchRecoveryQuarantine?: ResearchRecoveryRecord[] };
 export type OperationsTab = "today" | "research" | "analysis" | "results" | "library" | "social";
 export type WorkingContextTone = "ready" | "attention" | "protected" | "draft";
 export type WorkingContext = { item: string; stage: string; status: string; tone: WorkingContextTone; action: string; actionTab?: OperationsTab };
@@ -861,6 +1196,13 @@ export const DEFAULT_STATE: EtsyOperationsState = {
   keywordResearch: [],
   keywordResearchLoops: [],
   listingDrafts: [],
+  researchRounds: [],
+  researchBatches: [],
+  researchResultRows: [],
+  researchQueryTasks: [],
+  researchGapAnalysisAttempts: [],
+  researchDuplicateAuditEvents: [],
+  researchFreshnessPolicies: [],
 };
 
 export function hydrateKeywordResearch(state: EtsyOperationsState): EtsyOperationsState {
@@ -871,6 +1213,1622 @@ export function hydrateKeywordResearch(state: EtsyOperationsState): EtsyOperatio
 
 export function hydrateListingDrafts(state: EtsyOperationsState): EtsyOperationsState {
   return Array.isArray(state.listingDrafts) ? state : { ...state, listingDrafts: [] };
+}
+
+const RESEARCH_OPTIONAL_COLLECTIONS = ["researchRounds", "researchBatches", "researchResultRows", "researchQueryTasks", "researchGapAnalysisAttempts", "researchDuplicateAuditEvents", "researchFreshnessPolicies"] as const;
+
+export function researchMalformedOptionalCollections(state: EtsyOperationsState) {
+  const raw = state as EtsyOperationsState & Record<string, unknown>;
+  return RESEARCH_OPTIONAL_COLLECTIONS.filter((key) => raw[key] !== undefined && !Array.isArray(raw[key]));
+}
+
+/**
+ * Additive V1 hydration for Product Development research results. Missing
+ * optional collections are empty; malformed collections are ignored with a
+ * visible recovery note while every legacy collection is retained by reference.
+ */
+export function hydrateResearchResults(state: EtsyOperationsState): EtsyOperationsState {
+  const raw = state as EtsyOperationsState & Record<string, unknown>;
+  const malformed = researchMalformedOptionalCollections(state);
+  const researchRounds = Array.isArray(raw.researchRounds) ? raw.researchRounds as ResearchRound[] : [];
+  const researchBatches = Array.isArray(raw.researchBatches) ? raw.researchBatches as ResearchBatch[] : [];
+  const durableArtifacts = Array.isArray(raw.artifacts) ? raw.artifacts as EvidenceArtifact[] : state.artifacts;
+  const durableArtifactIdsByBatch = new Map<string, Set<string>>();
+  for (const artifact of durableArtifacts) {
+    if (!artifact.researchBatchId) continue;
+    const artifactIds = durableArtifactIdsByBatch.get(artifact.researchBatchId) ?? new Set<string>();
+    artifactIds.add(artifact.id);
+    durableArtifactIdsByBatch.set(artifact.researchBatchId, artifactIds);
+  }
+  let researchBatchesChanged = false;
+  const hydratedResearchBatches = researchBatches.map((batch) => {
+    const declaredArtifactIds = Array.isArray(batch.artifactIds) ? batch.artifactIds : [];
+    const durableArtifactIds = durableArtifactIdsByBatch.get(batch.id) ?? new Set<string>();
+    const artifactIds = declaredArtifactIds.filter((id) => durableArtifactIds.has(id));
+    if (artifactIds.length === declaredArtifactIds.length && Array.isArray(batch.artifactIds)) return batch;
+    researchBatchesChanged = true;
+    return { ...batch, artifactIds };
+  });
+  const researchResultRows = Array.isArray(raw.researchResultRows) ? raw.researchResultRows as ResearchResultRow[] : [];
+  let researchRowsChanged = false;
+  const hydratedResearchResultRows = researchResultRows.map((row) => {
+    const fields = {
+      searchVolume: normalizeResearchField(row.searchVolume?.raw, "number"),
+      competition: normalizeResearchField(row.competition?.raw, "number"),
+      trend: normalizeResearchField(row.trend?.raw, "number"),
+      relevanceScore: normalizeResearchField(row.relevanceScore?.raw, "number"),
+    };
+    const changed = (Object.keys(fields) as Array<keyof typeof fields>).some((field) => {
+      const current = row[field];
+      const next = fields[field];
+      return current.raw !== next.raw || current.parsed !== next.parsed || current.status !== next.status;
+    });
+    if (!changed) return row;
+    researchRowsChanged = true;
+    const next = { ...row, ...fields };
+    return { ...next, contentFingerprint: researchEvidenceFingerprint(next) };
+  });
+  const stableResearchResultRows = researchRowsChanged ? hydratedResearchResultRows : researchResultRows;
+  const researchQueryTasks = Array.isArray(raw.researchQueryTasks) ? raw.researchQueryTasks as ResearchQueryTask[] : [];
+  let researchTasksChanged = false;
+  const hydratedResearchQueryTasks = researchQueryTasks.map((task) => {
+    const exactRound = researchRounds.find((round) => round.id === task.roundId
+      && round.designId === task.designId
+      && round.productId === task.productId
+      && round.seedVersion === task.seedVersion);
+    if (!exactRound) return task;
+    const exactInput = researchActiveInputLedgerForRound(exactRound).find((input) => normalizeResearchQuery(input.query) === task.normalizedQuery
+      && input.intentDimensionId === task.intentDimensionId);
+    if (!exactInput || exactInput.anchorId === task.anchorId) return task;
+    researchTasksChanged = true;
+    return { ...task, anchorId: exactInput.anchorId };
+  });
+  const researchGapAnalysisAttempts = Array.isArray(raw.researchGapAnalysisAttempts) ? raw.researchGapAnalysisAttempts as ResearchGapAnalysisAttempt[] : [];
+  const researchDuplicateAuditEvents = Array.isArray(raw.researchDuplicateAuditEvents) ? raw.researchDuplicateAuditEvents as ResearchDuplicateAuditEvent[] : [];
+  const researchFreshnessPolicies = Array.isArray(raw.researchFreshnessPolicies) ? raw.researchFreshnessPolicies as ResearchFreshnessPolicy[] : [];
+  const currentErrors = Array.isArray(raw.researchRecoveryErrors) ? raw.researchRecoveryErrors as string[] : [];
+  const currentQuarantine = Array.isArray(raw.researchRecoveryQuarantine) ? raw.researchRecoveryQuarantine as ResearchRecoveryRecord[] : [];
+  const recoveredAt = new Date().toISOString();
+  const quarantineAdditions = malformed.map((collection) => {
+    const rawPayload = raw[collection];
+    const id = researchFingerprint({ collection, rawPayload });
+    return { id, collection, rawPayload, recoveredAt, message: `${collection} was malformed and was recovered as an empty optional collection.` };
+  }).filter((record) => !currentQuarantine.some((item) => item.id === record.id));
+  const researchRecoveryQuarantine = quarantineAdditions.length ? [...currentQuarantine, ...quarantineAdditions] : currentQuarantine;
+  const recoveryErrors = malformed.length
+    ? [...new Set([...currentErrors, ...malformed.map((key) => `${key} was malformed and was recovered as an empty optional collection.`)])]
+    : currentErrors;
+  const errorsUnchanged = malformed.length === 0 && (raw.researchRecoveryErrors === undefined || recoveryErrors === raw.researchRecoveryErrors);
+  const quarantineUnchanged = malformed.length === 0 && (raw.researchRecoveryQuarantine === undefined || researchRecoveryQuarantine === raw.researchRecoveryQuarantine);
+  if (
+    researchRounds === raw.researchRounds
+    && !researchBatchesChanged
+    && stableResearchResultRows === raw.researchResultRows
+    && !researchTasksChanged
+    && researchGapAnalysisAttempts === raw.researchGapAnalysisAttempts
+    && researchDuplicateAuditEvents === raw.researchDuplicateAuditEvents
+    && researchFreshnessPolicies === raw.researchFreshnessPolicies
+    && errorsUnchanged
+    && quarantineUnchanged
+  ) return state;
+  return {
+    ...state,
+    researchRounds,
+    researchBatches: hydratedResearchBatches,
+    researchResultRows: stableResearchResultRows,
+    researchQueryTasks: researchTasksChanged ? hydratedResearchQueryTasks : researchQueryTasks,
+    researchGapAnalysisAttempts,
+    researchDuplicateAuditEvents,
+    researchFreshnessPolicies,
+    ...(recoveryErrors.length ? { researchRecoveryErrors: recoveryErrors } : {}),
+    ...(researchRecoveryQuarantine.length ? { researchRecoveryQuarantine } : {}),
+  };
+}
+
+export const SHORT_INTENT_V2_VERSION = "short-intent-v2" as const;
+export const SHORT_INTENT_V2_SEEDS = [
+  "pastor appreciation",
+  "pastor gift journal",
+  "pastor prayer journal",
+  "Christian pastor gift",
+  "pastor thank you",
+] as const;
+
+export function createResearchSeedLedger(seedSnapshot: readonly string[] = SHORT_INTENT_V2_SEEDS): ResearchSeedLedgerEntry[] {
+  const seeds = seedSnapshot.map((query) => query.trim());
+  if (seeds.length !== 5 || seeds.some((query) => !query) || new Set(seeds.map((query) => query.toLocaleLowerCase())).size !== 5) {
+    throw new Error("A research seed ledger requires five unique nonblank frozen seeds.");
+  }
+  return seeds.map((query, index) => ({ id: createId("research-seed"), ordinal: index + 1, query }));
+}
+
+/**
+ * Old rounds intentionally do not receive inferred IDs: text alone is not
+ * enough to prove exact lineage. New rounds always receive this immutable ledger.
+ */
+export function researchSeedLedgerForRound(round: ResearchRound) {
+  const ledger = round.seedLedger;
+  if (!Array.isArray(ledger) || ledger.length !== 5) return [] as ResearchSeedLedgerEntry[];
+  const snapshotMatches = ledger.every((seed, index) => seed.ordinal === index + 1 && seed.query === round.seedSnapshot[index] && Boolean(seed.id));
+  return snapshotMatches ? ledger : [] as ResearchSeedLedgerEntry[];
+}
+
+export function researchSeedForRound(round: ResearchRound, seedId: string | undefined, query: string) {
+  const ledger = researchActiveInputLedgerForRound(round);
+  if (seedId) return ledger.find((seed) => seed.id === seedId && seed.query === query.trim());
+  return ledger.find((seed) => seed.query === query.trim());
+}
+
+export const ROUND_ONE_INTENT_DIMENSION_BLUEPRINT = [
+  { id: "product-role", label: "Product / role", definition: "The product language and recipient role used by the buyer." },
+  { id: "gift-intent", label: "Gift intent", definition: "An explicit gift-seeking intent for the recipient." },
+  { id: "use-case", label: "Use case", definition: "How the recipient will use the product." },
+  { id: "faith-identity", label: "Faith identity", definition: "Faith identity language that is relevant to the buyer and recipient." },
+  { id: "appreciation-thank-you", label: "Appreciation / thank-you", definition: "Appreciation or thank-you occasion language." },
+] as const;
+
+export function normalizeResearchQuery(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+}
+
+function exactResearchContext(item: ResearchContext, context: ResearchContext) {
+  return item.designId === context.designId && item.productId === context.productId && item.roundId === context.roundId && item.seedVersion === context.seedVersion;
+}
+
+export function researchIntentAnchorsForRound(round: ResearchRound): ResearchIntentAnchor[] {
+  const persisted = round.intentAnchors;
+  if (Array.isArray(persisted) && persisted.length >= 5 && persisted.length <= 8) {
+    const normalized = persisted.map((anchor) => normalizeResearchQuery(anchor.query));
+    const valid = persisted.every((anchor, index) => anchor.roundId === round.id && anchor.ordinal === index + 1 && Boolean(anchor.id && anchor.intentDimensionId && normalized[index]))
+      && new Set(normalized).size === persisted.length;
+    if (valid) return persisted;
+  }
+  if (round.seedVersion !== SHORT_INTENT_V2_VERSION) return [];
+  const ledger = researchSeedLedgerForRound(round);
+  if (ledger.length !== ROUND_ONE_INTENT_DIMENSION_BLUEPRINT.length) return [];
+  return ledger.map((seed, index) => ({
+    id: `research-anchor:${seed.id}`,
+    roundId: round.id,
+    ordinal: index + 1,
+    query: seed.query,
+    intentDimensionId: ROUND_ONE_INTENT_DIMENSION_BLUEPRINT[index].id,
+    origin: "round-1-seed",
+  }));
+}
+
+/**
+ * Canonical immutable input identity for the active round. Round 1 keeps the
+ * original five-seed IDs; an owner-approved adaptive round instead projects
+ * its persisted gap-anchor IDs without rewriting the historical seed ledger.
+ */
+export function researchActiveInputLedgerForRound(round: ResearchRound): ResearchActiveInputLedgerEntry[] {
+  const anchors = researchIntentAnchorsForRound(round);
+  const seedLedger = researchSeedLedgerForRound(round);
+  if (!round.sourceGapAnalysisId) {
+    if (anchors.length !== seedLedger.length) return [];
+    const exactRoundOneProjection = anchors.every((anchor, index) => {
+      const seed = seedLedger[index];
+      return anchor.origin === "round-1-seed"
+        && anchor.id === `research-anchor:${seed?.id}`
+        && anchor.ordinal === seed?.ordinal
+        && anchor.query === seed?.query;
+    });
+    return exactRoundOneProjection ? anchors.map((anchor, index) => ({
+      id: seedLedger[index].id,
+      ordinal: anchor.ordinal,
+      query: anchor.query,
+      anchorId: anchor.id,
+      intentDimensionId: anchor.intentDimensionId,
+      origin: anchor.origin,
+    })) : [];
+  }
+  const approvedCandidateIds = round.adaptiveOwnerApproval?.approvedBy === "owner"
+    ? round.adaptiveOwnerApproval.selectedGapCandidateIds
+    : [];
+  const approvedCandidateIdSet = new Set(approvedCandidateIds);
+  const exactAdaptiveProjection = anchors.length >= 5
+    && anchors.length <= 8
+    && approvedCandidateIdSet.size === anchors.length
+    && anchors.every((anchor) => anchor.origin === "owner-approved-gap"
+      && anchor.sourceGapAnalysisId === round.sourceGapAnalysisId
+      && Boolean(anchor.sourceGapCandidateId && approvedCandidateIdSet.has(anchor.sourceGapCandidateId)));
+  return exactAdaptiveProjection ? anchors.map((anchor) => ({
+    id: anchor.id,
+    ordinal: anchor.ordinal,
+    query: anchor.query,
+    anchorId: anchor.id,
+    intentDimensionId: anchor.intentDimensionId,
+    origin: anchor.origin,
+  })) : [];
+}
+
+/** Exact task-to-input match used by preview and regression tests. */
+export function researchActiveInputForQueryTask(round: ResearchRound, task: ResearchQueryTask) {
+  const context: ResearchContext = { designId: round.designId, productId: round.productId, roundId: round.id, seedVersion: round.seedVersion };
+  if (!exactResearchContext(task, context)) return undefined;
+  return researchActiveInputLedgerForRound(round).find((input) => input.anchorId === task.anchorId
+    && input.intentDimensionId === task.intentDimensionId
+    && normalizeResearchQuery(input.query) === task.normalizedQuery);
+}
+
+export function researchRequiredDimensionsForRound(round: ResearchRound): RequiredIntentDimension[] {
+  const anchors = researchIntentAnchorsForRound(round);
+  if (Array.isArray(round.requiredIntentDimensions) && round.requiredIntentDimensions.length >= 5 && round.requiredIntentDimensions.length <= 8) {
+    const valid = round.requiredIntentDimensions.every((dimension, index) => dimension.ordinal === index + 1
+      && Boolean(dimension.id && dimension.label && dimension.definition)
+      && dimension.anchorIds.length > 0
+      && dimension.anchorIds.every((anchorId) => anchors.some((anchor) => anchor.id === anchorId && anchor.intentDimensionId === dimension.id)));
+    if (valid && new Set(round.requiredIntentDimensions.map((dimension) => dimension.id)).size === round.requiredIntentDimensions.length) return round.requiredIntentDimensions;
+  }
+  if (round.seedVersion !== SHORT_INTENT_V2_VERSION || anchors.length !== 5) return [];
+  return ROUND_ONE_INTENT_DIMENSION_BLUEPRINT.map((dimension, index) => ({
+    ...dimension,
+    ordinal: index + 1,
+    anchorIds: [anchors[index].id],
+  }));
+}
+
+export function createResearchQueryTasks(input: {
+  round: ResearchRound;
+  selectedQueries: Array<{ query: string; intentDimensionId: string; anchorId?: string }>;
+  source: ResearchSource;
+  completedQueries?: readonly string[];
+  now?: string;
+}): ResearchQueryTask[] {
+  const anchors = researchIntentAnchorsForRound(input.round);
+  const activeInputs = researchActiveInputLedgerForRound(input.round);
+  if (anchors.length < 5 || anchors.length > 8 || activeInputs.length !== anchors.length) throw new Error("Bulk comparison requires 5–8 valid ordered intent anchors.");
+  if (input.selectedQueries.length < 3 || input.selectedQueries.length > 5) throw new Error("Select exactly 3–5 Individual queries before creating tasks.");
+  const completed = new Set((input.completedQueries ?? []).map(normalizeResearchQuery));
+  const seen = new Set<string>();
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const now = input.now ?? new Date().toISOString();
+  return input.selectedQueries.map((selection, index) => {
+    const normalizedQuery = normalizeResearchQuery(selection.query);
+    if (!normalizedQuery || seen.has(normalizedQuery)) throw new Error(`Individual query ${index + 1} is blank or duplicated.`);
+    if (completed.has(normalizedQuery)) throw new Error(`Individual query ${index + 1} already exists in completed-query history.`);
+    const anchor = selection.anchorId ? anchors.find((item) => item.id === selection.anchorId) : anchors.find((item) => normalizeResearchQuery(item.query) === normalizedQuery && item.intentDimensionId === selection.intentDimensionId);
+    const activeInput = anchor ? activeInputs.find((item) => item.anchorId === anchor.id && item.intentDimensionId === selection.intentDimensionId && normalizeResearchQuery(item.query) === normalizedQuery) : undefined;
+    if (!anchor || !activeInput || anchor.intentDimensionId !== selection.intentDimensionId || normalizeResearchQuery(anchor.query) !== normalizedQuery) throw new Error(`Individual query ${index + 1} does not match an active Bulk anchor.`);
+    seen.add(normalizedQuery);
+    return {
+      ...context,
+      id: createId("research-query-task"),
+      selectedOrdinal: index + 1,
+      query: selection.query.trim(),
+      normalizedQuery,
+      intentDimensionId: selection.intentDimensionId,
+      anchorId: anchor.id,
+      source: input.source,
+      status: "pending" as const,
+      artifactIds: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
+}
+
+export function researchQueryTasksForContext(tasks: ResearchQueryTask[], context: ResearchContext) {
+  return tasks.filter((task) => exactResearchContext(task, context)).sort((left, right) => left.selectedOrdinal - right.selectedOrdinal || left.id.localeCompare(right.id));
+}
+
+export function bindResearchArtifactToQueryTask(artifact: EvidenceArtifact, task: ResearchQueryTask): EvidenceArtifact {
+  if (artifact.researchRoundId !== task.roundId || artifact.researchSeedVersion !== task.seedVersion || artifact.targetId !== task.designId || artifact.source !== task.source) {
+    throw new Error("This artifact does not match the exact Individual query task target. Reassign it explicitly before save.");
+  }
+  return {
+    ...artifact,
+    researchQueryTaskId: task.id,
+    researchOriginatingQuery: task.query,
+    researchIntentDimensionId: task.intentDimensionId,
+    researchOriginatingQueries: [task.query],
+  };
+}
+
+export function updateResearchQueryTaskFromArtifact(task: ResearchQueryTask, artifact: EvidenceArtifact, status: ResearchQueryTaskStatus, now = new Date().toISOString()): ResearchQueryTask {
+  if (artifact.researchQueryTaskId !== task.id || normalizeResearchQuery(artifact.researchOriginatingQuery ?? "") !== task.normalizedQuery) {
+    return { ...task, status: "error", error: "Artifact/query mismatch. Use explicit reassignment; filename and order are ignored.", updatedAt: now };
+  }
+  const artifactIds = task.artifactIds.includes(artifact.id) ? task.artifactIds : [...task.artifactIds, artifact.id];
+  return { ...task, status, artifactIds, error: status === "error" ? task.error : undefined, updatedAt: now };
+}
+
+export function createResearchBatch(input: {
+  id?: string;
+  round: ResearchRound;
+  selectedSeedIds: readonly string[];
+  now?: string;
+}): ResearchBatch {
+  const ledger = researchActiveInputLedgerForRound(input.round);
+  if (!ledger.length) throw new Error("This round has no canonical frozen input identity. Start a new round before creating a Research Batch.");
+  const selectedSeedIds = [...new Set(input.selectedSeedIds)];
+  if (!selectedSeedIds.length || selectedSeedIds.some((id) => !ledger.some((seed) => seed.id === id))) {
+    throw new Error("Select one or more frozen seeds for this exact Research Batch.");
+  }
+  const now = input.now ?? new Date().toISOString();
+  return {
+    id: input.id ?? createId("research-batch"),
+    designId: input.round.designId,
+    productId: input.round.productId,
+    roundId: input.round.id,
+    seedVersion: input.round.seedVersion,
+    seedLedger: ledger.map(({ id, ordinal, query }) => ({ id, ordinal, query })),
+    selectedSeedIds,
+    artifactIds: [],
+    status: "draft-preview",
+    createdAt: now,
+    createdAtHk: hongKongCaptureDateTime(now),
+    updatedAt: now,
+  };
+}
+
+export function researchBatchMatchesContext(batch: ResearchBatch, context: ResearchContext) {
+  return batch.designId === context.designId
+    && batch.productId === context.productId
+    && batch.roundId === context.roundId
+    && batch.seedVersion === context.seedVersion;
+}
+
+/**
+ * Remove one unsaved preview from a batch without touching saved artifacts.
+ * Preview batches live in session storage, so the UI uses this before a
+ * sibling is saved; persistence separately filters against durable artifacts.
+ */
+export function removeResearchArtifactFromBatch(batch: ResearchBatch, artifactId: string): ResearchBatch {
+  const artifactIds = batch.artifactIds.filter((id) => id !== artifactId);
+  return artifactIds.length === batch.artifactIds.length ? batch : { ...batch, artifactIds };
+}
+
+/**
+ * Recover a preview created while an unsaved draft round was being recreated.
+ * The frozen tuple and order must still match exactly; only generated seed IDs
+ * may be remapped to the current draft round's IDs.
+ */
+export function alignResearchBatchToRound(batch: ResearchBatch, round: ResearchRound): ResearchBatch {
+  const context: ResearchContext = { designId: round.designId, productId: round.productId, roundId: round.id, seedVersion: round.seedVersion };
+  if (!researchBatchMatchesContext(batch, context)) return batch;
+  const roundLedger = researchActiveInputLedgerForRound(round);
+  if (!roundLedger.length || batch.seedLedger.length !== roundLedger.length) return batch;
+  const currentByKey = new Map(roundLedger.map((seed) => [`${seed.ordinal}:${seed.query}`, seed.id]));
+  const remappedLedger = batch.seedLedger.map((seed) => ({ ...seed, id: currentByKey.get(`${seed.ordinal}:${seed.query}`) ?? "" }));
+  if (remappedLedger.some((seed) => !seed.id) || batch.selectedSeedIds.some((id) => !batch.seedLedger.some((seed) => seed.id === id))) return batch;
+  const remappedSelectedSeedIds = batch.selectedSeedIds.map((id) => {
+    const seed = batch.seedLedger.find((item) => item.id === id)!;
+    return currentByKey.get(`${seed.ordinal}:${seed.query}`) ?? id;
+  });
+  return { ...batch, seedLedger: roundLedger.map(({ id, ordinal, query }) => ({ id, ordinal, query })), selectedSeedIds: remappedSelectedSeedIds };
+}
+
+export function researchArtifactSeedIds(batch: ResearchBatch, artifact: Pick<EvidenceArtifact, "researchSeedIds" | "researchSeedOverrideId">) {
+  const inherited = artifact.researchSeedIds?.length ? artifact.researchSeedIds : batch.selectedSeedIds;
+  return artifact.researchSeedOverrideId ? [artifact.researchSeedOverrideId] : inherited;
+}
+
+/**
+ * A batch may deliberately cover several seeds, but a normalised row needs one
+ * immutable seed identity.  A single inherited seed is therefore exact; a
+ * multi-seed artifact must be explicitly overridden before it can contribute
+ * to a Coach decision.
+ */
+export function researchExactSeedIdForArtifact(batch: ResearchBatch, artifact: Pick<EvidenceArtifact, "researchSeedIds" | "researchSeedOverrideId">) {
+  const seedIds = researchArtifactSeedIds(batch, artifact);
+  return seedIds.length === 1 ? seedIds[0] : undefined;
+}
+
+export function createResearchRound(input: {
+  id?: string;
+  designId: string;
+  productId: string;
+  roundNumber: number;
+  seedVersion?: string;
+  seedSnapshot?: readonly string[];
+  now?: string;
+}): ResearchRound {
+  const seedVersion = input.seedVersion ?? SHORT_INTENT_V2_VERSION;
+  const seeds = (input.seedSnapshot ?? SHORT_INTENT_V2_SEEDS).map((seed) => seed.trim());
+  if (seeds.length !== 5) throw new Error("A research round requires exactly five frozen seeds.");
+  if (new Set(seeds.map((seed) => seed.toLocaleLowerCase())).size !== 5 || seeds.some((seed) => !seed)) throw new Error("Research seeds must be five unique nonblank values.");
+  if (seedVersion !== SHORT_INTENT_V2_VERSION || seeds.some((seed, index) => seed !== SHORT_INTENT_V2_SEEDS[index])) throw new Error("short-intent-v2 uses the fixed approved seed tuple and order.");
+  if (!input.designId || !input.productId || !Number.isInteger(input.roundNumber) || input.roundNumber < 1) throw new Error("Research round lineage requires a design, product, and positive round number.");
+  const now = input.now ?? new Date().toISOString();
+  return {
+    id: input.id ?? createId("research-round"),
+    designId: input.designId,
+    productId: input.productId,
+    roundNumber: input.roundNumber,
+    seedVersion,
+    seedSnapshot: seeds as ResearchRound["seedSnapshot"],
+    seedLedger: createResearchSeedLedger(seeds),
+    status: "draft-preview",
+    artifactIds: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** Create a genuinely new isolated round number from persisted history only. */
+export function createNextResearchRound(stateInput: Pick<EtsyOperationsState, "researchRounds">, input: {
+  designId: string;
+  productId: string;
+  seedVersion?: string;
+  id?: string;
+  now?: string;
+}) {
+  const seedVersion = input.seedVersion ?? SHORT_INTENT_V2_VERSION;
+  const previousRoundNumber = stateInput.researchRounds
+    .filter((round) => round.designId === input.designId && round.productId === input.productId && round.seedVersion === seedVersion)
+    .reduce((highest, round) => Math.max(highest, round.roundNumber), 0);
+  return createResearchRound({ ...input, seedVersion, roundNumber: previousRoundNumber + 1 });
+}
+
+/**
+ * Open a later adaptive round only from the latest persisted proposal and one
+ * explicit owner-approved 5–8 candidate selection. The original five-seed
+ * ledger remains untouched; the new round freezes separate gap-anchor and
+ * dimension identities for truthful downstream coverage.
+ */
+export function createAdaptiveNextResearchRound(
+  stateInput: Pick<EtsyOperationsState, "researchRounds" | "researchGapAnalysisAttempts" | "researchQueryTasks" | "researchResultRows">,
+  input: {
+    sourceRoundId: string;
+    gapAnalysisId: string;
+    selectedGapCandidateIds: readonly string[];
+    ownerApprovedBy: "owner";
+    id?: string;
+    now?: string;
+  },
+) {
+  const sourceRound = stateInput.researchRounds.find((round) => round.id === input.sourceRoundId);
+  if (!sourceRound) throw new Error("The source research round is missing; no adaptive round was created.");
+  const latestRound = stateInput.researchRounds
+    .filter((round) => round.designId === sourceRound.designId && round.productId === sourceRound.productId && round.seedVersion === sourceRound.seedVersion)
+    .sort((left, right) => right.roundNumber - left.roundNumber || right.createdAt.localeCompare(left.createdAt))[0];
+  if (latestRound?.id !== sourceRound.id) throw new Error("Only the latest exact research round may open an adaptive next round.");
+  const exactAttempts = stateInput.researchGapAnalysisAttempts
+    .filter((attempt) => attempt.designId === sourceRound.designId && attempt.productId === sourceRound.productId && attempt.roundId === sourceRound.id && attempt.seedVersion === sourceRound.seedVersion)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  const proposal = exactAttempts.find((attempt) => attempt.id === input.gapAnalysisId);
+  if (!proposal || proposal.status !== "proposal-ready" || proposal.rankedCandidates.length < 15 || proposal.rankedCandidates.length > 25) {
+    throw new Error("A valid 15–25 candidate proposal is required before an adaptive round can be created.");
+  }
+  if (exactAttempts[0]?.id !== proposal.id) throw new Error("Only the latest exact gap proposal may be approved.");
+  const currentAdaptiveAction = deriveAdaptiveResearchAction({
+    round: sourceRound,
+    tasks: stateInput.researchQueryTasks,
+    rows: stateInput.researchResultRows,
+    conclusion: sourceRound.conclusion,
+    gapAnalysis: proposal,
+  });
+  if (currentAdaptiveAction.actionKind !== "propose-gap-round" || currentAdaptiveAction.persistedDecision !== "next-round") {
+    throw new Error("The latest round has no owner-reviewable gap proposal; no adaptive round was created.");
+  }
+  if (stateInput.researchRounds.some((round) => round.sourceGapAnalysisId === proposal.id)) {
+    throw new Error("This gap proposal already created a round; reload the existing round instead.");
+  }
+  const selectedIds = [...input.selectedGapCandidateIds];
+  if (selectedIds.length < 5 || selectedIds.length > 8 || new Set(selectedIds).size !== selectedIds.length) {
+    throw new Error("Owner approval must select 5–8 unique gap candidates.");
+  }
+  const proposalById = new Map(proposal.rankedCandidates.map((candidate) => [candidate.id, candidate]));
+  const selected = selectedIds.map((id) => proposalById.get(id));
+  if (selected.some((candidate) => !candidate)) throw new Error("Every selected gap anchor must belong to the latest ranked proposal.");
+  const candidates = selected as GapCandidate[];
+  const normalizedQueries = candidates.map((candidate) => normalizeResearchQuery(candidate.query));
+  if (normalizedQueries.some((query) => !query) || new Set(normalizedQueries).size !== candidates.length) {
+    throw new Error("Owner-approved adaptive anchors must be 5–8 unique nonblank queries.");
+  }
+  const approvedAt = input.now ?? new Date().toISOString();
+  if (input.ownerApprovedBy !== "owner" || !Number.isFinite(new Date(approvedAt).getTime())) {
+    throw new Error("A valid explicit owner approval time is required.");
+  }
+  const round = createNextResearchRound(stateInput, {
+    id: input.id,
+    designId: sourceRound.designId,
+    productId: sourceRound.productId,
+    seedVersion: sourceRound.seedVersion,
+    now: approvedAt,
+  });
+  const intentAnchors: ResearchIntentAnchor[] = candidates.map((candidate, index) => {
+    const dimensionId = `gap-dimension:${researchFingerprint({ proposalId: proposal.id, candidateId: candidate.id })}`;
+    return {
+      id: `research-gap-anchor:${researchFingerprint({ roundId: round.id, candidateId: candidate.id })}`,
+      roundId: round.id,
+      ordinal: index + 1,
+      query: candidate.query.trim(),
+      intentDimensionId: dimensionId,
+      origin: "owner-approved-gap",
+      sourceGapCandidateId: candidate.id,
+      sourceTargetDimensionId: candidate.targetDimension,
+      sourceGapAnalysisId: proposal.id,
+    };
+  });
+  const requiredIntentDimensions: RequiredIntentDimension[] = intentAnchors.map((anchor, index) => ({
+    id: anchor.intentDimensionId,
+    label: candidates[index].query.trim(),
+    ordinal: index + 1,
+    definition: `Owner-approved extension of ${candidates[index].targetDimension}: ${candidates[index].extensionLogic.trim()}`,
+    anchorIds: [anchor.id],
+  }));
+  return {
+    ...round,
+    intentAnchors,
+    requiredIntentDimensions,
+    sourceRoundId: sourceRound.id,
+    sourceGapAnalysisId: proposal.id,
+    adaptiveOwnerApproval: { approvedBy: "owner" as const, approvedAt, selectedGapCandidateIds: selectedIds },
+  };
+}
+
+export function normalizeResearchField(rawValue: unknown, kind: "string"): ResearchField<string>;
+export function normalizeResearchField(rawValue: unknown, kind: "number"): ResearchField<number>;
+export function normalizeResearchField(rawValue: unknown, kind: "string" | "number"): ResearchField<string> | ResearchField<number> {
+  const raw = rawValue === null || rawValue === undefined ? "" : String(rawValue).trim();
+  if (!raw) return { raw, parsed: null, status: "missing" };
+  if (kind === "string") return { raw, parsed: raw, status: "confirmed" };
+  if (/^(?:unknown|n\/?a|not available|[-—])$/i.test(raw)) return { raw, parsed: null, status: "source-unknown" };
+  const parsed = Number(raw.replace(/[$,%\s,]/g, ""));
+  if (!Number.isFinite(parsed)) return { raw, parsed: null, status: "invalid" };
+  return { raw, parsed, status: parsed === 0 ? "confirmed-zero" : "confirmed" };
+}
+
+function strictResearchDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value ? date : null;
+}
+
+export function hongKongCalendarDate(value: Date | string | number = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: "year" | "month" | "day") => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** A human-readable, automatic import/capture value; source dates remain separate editable calendar fields. */
+export function hongKongCaptureDateTime(value: Date | string | number = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const part = (type: "year" | "month" | "day" | "hour" | "minute" | "second") => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")} HKT`;
+}
+
+export function researchPastedScreenshotFileName(mimeType: string, localDate = hongKongCalendarDate()) {
+  const extension = mimeType === "image/jpeg" ? "jpg" : "png";
+  const safeDate = strictResearchDate(localDate) ? localDate : hongKongCalendarDate();
+  return `pasted-screenshot-${safeDate}.${extension}`;
+}
+
+export function assessResearchFreshness(sourceDate: string, policy?: ResearchFreshnessPolicy, nowDate = hongKongCalendarDate()) {
+  const visible = sourceDate ?? "";
+  const parsed = strictResearchDate(visible);
+  const comparisonDate = policy?.effectiveDate || nowDate;
+  const now = strictResearchDate(comparisonDate) ?? new Date(`${comparisonDate}T00:00:00.000Z`);
+  if (!visible) return { sourceDate: visible, ageDays: null, freshness: "not-assessed" as const, stale: false, eligible: false, issue: "blank" as const };
+  if (!parsed || !Number.isFinite(now.getTime())) return { sourceDate: visible, ageDays: null, freshness: "not-assessed" as const, stale: false, eligible: false, issue: "malformed" as const };
+  const ageDays = Math.floor((now.getTime() - parsed.getTime()) / 86_400_000);
+  if (ageDays < 0) return { sourceDate: visible, ageDays, freshness: "not-assessed" as const, stale: false, eligible: false, issue: "future" as const };
+  if (!policy) return { sourceDate: visible, ageDays, freshness: "not-assessed" as const, stale: false, eligible: true };
+  const stale = ageDays > Math.max(0, policy.maxAgeDays);
+  return { sourceDate: visible, ageDays, freshness: stale ? "stale" as const : "current" as const, stale, eligible: !stale };
+}
+
+export function researchFreshnessPolicyScope(source: ResearchSource, designId: string, productId: string) {
+  return `${source}:${designId}:${productId}`;
+}
+
+export function researchFreshnessPolicyForContext(policies: ResearchFreshnessPolicy[], source: ResearchSource, designId: string, productId: string) {
+  const scope = researchFreshnessPolicyScope(source, designId, productId);
+  return policies.find((policy) => policy.scope === scope);
+}
+
+export function upsertResearchFreshnessPolicy(policies: ResearchFreshnessPolicy[], policy: ResearchFreshnessPolicy) {
+  return [policy, ...policies.filter((item) => item.scope !== policy.scope)];
+}
+
+export type RawResearchResultRow = { phrase: unknown; searchVolume: unknown; competition: unknown; trend: unknown; relevanceScore: unknown };
+
+const RESEARCH_HEADER_ALIASES = {
+  phrase: ["keyword", "keywords", "keyword phrase", "phrase", "search term", "tag"],
+  searchVolume: ["search volume", "searches", "monthly searches", "avg searches", "volume"],
+  competition: ["competition", "etsy competition", "competing listings", "listings", "kd"],
+  trend: ["trend", "trend score", "search trend", "growth"],
+  relevanceScore: ["relevance", "relevance score", "keyword score", "overall score", "score"],
+} as const;
+
+function normalizedResearchHeader(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9%]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseDelimitedLine(line: string, delimiter: string) {
+  const cells: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"') {
+      if (quoted && line[index + 1] === '"') { value += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === delimiter && !quoted) { cells.push(value.trim()); value = ""; }
+    else value += character;
+  }
+  cells.push(value.trim());
+  return cells;
+}
+
+type ResearchTextSeparator = "," | "\t" | "ocr-columns";
+
+function researchTextSeparator(header: string): ResearchTextSeparator {
+  if (header.includes("\t")) return "\t";
+  if (header.includes(",")) return ",";
+  return "ocr-columns";
+}
+
+function parseResearchTextLine(line: string, separator: ResearchTextSeparator) {
+  return separator === "ocr-columns"
+    ? line.trim().split(/\s{2,}/).map((cell) => cell.trim())
+    : parseDelimitedLine(line, separator);
+}
+
+export function assertResearchFixtureRows(rows: Array<Record<string, unknown>>) {
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("Research fixture requires at least one row.");
+  const headers = Object.keys(rows[0]).map(normalizedResearchHeader);
+  const hasPhrase = RESEARCH_HEADER_ALIASES.phrase.some((alias) => headers.includes(normalizedResearchHeader(alias)));
+  const hasNumericSignal = (["searchVolume", "competition", "trend", "relevanceScore"] as const).some((field) => RESEARCH_HEADER_ALIASES[field].some((alias) => headers.includes(normalizedResearchHeader(alias))));
+  if (!hasPhrase || !hasNumericSignal) throw new Error("Research fixture requires a phrase header and at least one recognized numeric signal header.");
+  return true;
+}
+
+export function parseResearchDelimitedText(text: string, _source: ResearchSource): RawResearchResultRow[] {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) throw new Error("Research text requires a header row and at least one result row.");
+  const separator = researchTextSeparator(lines[0]);
+  const headers = parseResearchTextLine(lines[0], separator);
+  const normalized = headers.map(normalizedResearchHeader);
+  const indexes = Object.fromEntries(Object.entries(RESEARCH_HEADER_ALIASES).map(([field, aliases]) => [field, aliases.map(normalizedResearchHeader).map((alias) => normalized.indexOf(alias)).find((index) => index >= 0) ?? -1])) as Record<keyof RawResearchResultRow, number>;
+  if (indexes.phrase < 0 || !([indexes.searchVolume, indexes.competition, indexes.trend, indexes.relevanceScore].some((index) => index >= 0))) throw new Error("Research fixture requires a phrase header and at least one recognized numeric signal header.");
+  const rows = lines.slice(1).map((line) => parseResearchTextLine(line, separator));
+  if (separator === "ocr-columns") {
+    const firstNumericIndex = Math.min(...[indexes.searchVolume, indexes.competition, indexes.trend, indexes.relevanceScore].filter((index) => index >= 0));
+    const requiredColumnCount = Math.max(indexes.phrase, firstNumericIndex) + 1;
+    if (headers.length < requiredColumnCount || rows.some((cells) => cells.length < requiredColumnCount)) {
+      throw new Error("OCR table text requires visible column gaps between the phrase and a recognized numeric signal.");
+    }
+  }
+  return rows.map((cells) => {
+    return {
+      phrase: cells[indexes.phrase] ?? "",
+      searchVolume: indexes.searchVolume >= 0 ? cells[indexes.searchVolume] ?? "" : "",
+      competition: indexes.competition >= 0 ? cells[indexes.competition] ?? "" : "",
+      trend: indexes.trend >= 0 ? cells[indexes.trend] ?? "" : "",
+      relevanceScore: indexes.relevanceScore >= 0 ? cells[indexes.relevanceScore] ?? "" : "",
+    };
+  });
+}
+
+function researchFingerprint(value: unknown) {
+  const text = JSON.stringify(value);
+  let hash = 14695981039346656037n;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= BigInt(text.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return `rr-${hash.toString(16).padStart(16, "0")}`;
+}
+
+function researchEvidenceMedium(artifact: EvidenceArtifact, ocrOnly: boolean): ResearchEvidenceMedium {
+  if (ocrOnly || artifact.mimeType.startsWith("image/")) return "ocr-image";
+  if (/\.(?:csv|xlsx?|xls)$/i.test(artifact.fileName) || /(?:csv|spreadsheet|excel)/i.test(artifact.mimeType)) return "structured-export";
+  return "structured-text";
+}
+
+function normalizedResearchValues(row: Pick<ResearchResultRow, "phrase" | "searchVolume" | "competition" | "trend" | "relevanceScore">) {
+  return {
+    phrase: { parsed: row.phrase.parsed?.trim().toLocaleLowerCase() ?? null, status: row.phrase.status },
+    searchVolume: { parsed: row.searchVolume.parsed, status: row.searchVolume.status },
+    competition: { parsed: row.competition.parsed, status: row.competition.status },
+    trend: { parsed: row.trend.parsed, status: row.trend.status },
+    relevanceScore: { parsed: row.relevanceScore.parsed, status: row.relevanceScore.status },
+  };
+}
+
+function normalizedResearchConfirmationTruth(confirmations: ResearchFieldConfirmation[]) {
+  return [...confirmations]
+    .map(({ field, rawFieldOrKey, confirmedValue, confirmedBy }) => ({ field, rawFieldOrKey, confirmedValue, confirmedBy }))
+    .sort((left, right) => left.field.localeCompare(right.field) || left.rawFieldOrKey.localeCompare(right.rawFieldOrKey));
+}
+
+function researchValueFingerprint(row: ResearchResultRow) {
+  return researchFingerprint({ lineageKey: row.lineageKey, values: normalizedResearchValues(row) });
+}
+
+function researchEvidenceFingerprint(row: ResearchResultRow, artifact?: EvidenceArtifact) {
+  const evidenceMedium = row.evidenceMedium ?? (artifact ? researchEvidenceMedium(artifact, row.flags.ocrOnly) : row.flags.ocrOnly ? "ocr-image" : "structured-text");
+  return researchFingerprint({
+    valueFingerprint: researchValueFingerprint(row),
+    fields: { phrase: row.phrase, searchVolume: row.searchVolume, competition: row.competition, trend: row.trend, relevanceScore: row.relevanceScore },
+    evidenceMedium,
+    ocrOnly: row.flags.ocrOnly,
+    unconfirmed: row.flags.unconfirmed,
+    fieldConfirmations: normalizedResearchConfirmationTruth(row.fieldConfirmations ?? []),
+  });
+}
+
+function researchEvidenceQuality(row: ResearchResultRow, artifact?: EvidenceArtifact) {
+  if (row.flags.unconfirmed) return 0;
+  const medium = row.evidenceMedium ?? (artifact ? researchEvidenceMedium(artifact, row.flags.ocrOnly) : row.flags.ocrOnly ? "ocr-image" : "structured-text");
+  if (medium === "ocr-image") return 1;
+  return medium === "structured-text" ? 2 : 3;
+}
+
+function reconcileResearchLineageConflicts(rows: ResearchResultRow[], lineageKey: string) {
+  const active = rows.filter((row) => row.lineageKey === lineageKey && !row.supersededByRowId);
+  const conflicting = new Set(active.map(researchValueFingerprint)).size > 1;
+  return rows.map((row) => row.lineageKey !== lineageKey ? row : {
+    ...row,
+    flags: { ...row.flags, conflicting: !row.supersededByRowId && conflicting },
+  });
+}
+
+export function normalizeResearchResultRow(input: {
+  id?: string;
+  round: ResearchRound;
+  batch?: ResearchBatch;
+  queryTask?: ResearchQueryTask;
+  artifact: EvidenceArtifact;
+  originatingSeedId?: string;
+  originatingQuery: string;
+  raw: RawResearchResultRow;
+  freshnessPolicy?: ResearchFreshnessPolicy;
+  ocrOnly?: boolean;
+  fieldConfirmations?: ResearchFieldConfirmation[];
+  now?: string;
+}): ResearchResultRow {
+  if (input.artifact.source !== "erank" && input.artifact.source !== "everbee") throw new Error("Research rows require eRank or EverBee supplemental source lineage.");
+  const sourceDate = input.artifact.researchSourceDate ?? input.artifact.periodStart ?? "";
+  const freshness = assessResearchFreshness(sourceDate, input.freshnessPolicy, hongKongCalendarDate(input.now ?? new Date()));
+  const phrase = normalizeResearchField(input.raw.phrase, "string");
+  const searchVolume = normalizeResearchField(input.raw.searchVolume, "number");
+  const competition = normalizeResearchField(input.raw.competition, "number");
+  const trend = normalizeResearchField(input.raw.trend, "number");
+  const relevanceScore = normalizeResearchField(input.raw.relevanceScore, "number");
+  const ocrOnly = input.ocrOnly ?? input.artifact.mimeType.startsWith("image/");
+  const evidenceMedium = researchEvidenceMedium(input.artifact, ocrOnly);
+  const fieldConfirmations = input.fieldConfirmations ?? [];
+  const ownerConfirmed = input.artifact.ownerConfirmed;
+  // Legacy rows can retain their historical query-only display mapping. New
+  // batch rows never infer seed identity from text: a frozen ID is required.
+  const mappedSeed = input.batch && !input.originatingSeedId
+    ? undefined
+    : researchSeedForRound(input.round, input.originatingSeedId, input.originatingQuery);
+  const batchAllowsSeed = !input.batch || researchBatchMatchesContext(input.batch, {
+    designId: input.round.designId,
+    productId: input.round.productId,
+    roundId: input.round.id,
+    seedVersion: input.round.seedVersion,
+  }) && researchArtifactSeedIds(input.batch, input.artifact).includes(mappedSeed?.id ?? "");
+  const taskContext: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const taskRequired = Boolean(input.artifact.researchQueryTaskId || input.artifact.researchOriginatingQuery || input.artifact.researchIntentDimensionId);
+  const taskMatches = !taskRequired || Boolean(input.queryTask
+    && exactResearchContext(input.queryTask, taskContext)
+    && input.artifact.researchQueryTaskId === input.queryTask.id
+    && normalizeResearchQuery(input.artifact.researchOriginatingQuery ?? "") === input.queryTask.normalizedQuery
+    && input.artifact.researchIntentDimensionId === input.queryTask.intentDimensionId
+    && normalizeResearchQuery(input.originatingQuery) === input.queryTask.normalizedQuery);
+  const unmapped = !mappedSeed || !batchAllowsSeed || !taskMatches;
+  const lineageParts = {
+    designId: input.round.designId,
+    productId: input.round.productId,
+    roundId: input.round.id,
+    seedVersion: input.round.seedVersion,
+    originatingSeedId: mappedSeed?.id ?? "unmapped",
+    originatingQuery: input.originatingQuery.trim(),
+    ...(taskRequired ? { researchQueryTaskId: input.queryTask?.id ?? input.artifact.researchQueryTaskId ?? "unmapped-task" } : {}),
+    source: input.artifact.source,
+    sourceDate,
+    phrase: phrase.raw.toLocaleLowerCase(),
+  };
+  const fields = { phrase, searchVolume, competition, trend, relevanceScore };
+  const validFieldNames = RESEARCH_FIELDS.filter((name) => fields[name].status === "confirmed" || fields[name].status === "confirmed-zero");
+  const ocrFieldsConfirmed = validFieldNames.every((name) => fieldConfirmations.some((confirmation) => confirmation.field === name));
+  const row: ResearchResultRow = {
+    id: input.id ?? createId("research-row"),
+    roundId: input.round.id,
+    artifactId: input.artifact.id,
+    designId: input.round.designId,
+    productId: input.round.productId,
+    seedVersion: input.round.seedVersion,
+    ...(input.batch ? { researchBatchId: input.batch.id } : {}),
+    ...(mappedSeed ? { originatingSeedId: mappedSeed.id } : {}),
+    originatingQuery: input.originatingQuery.trim(),
+    ...(input.queryTask ? { researchQueryTaskId: input.queryTask.id, researchOriginatingQuery: input.queryTask.query, intentDimensionId: input.queryTask.intentDimensionId } : {}),
+    source: input.artifact.source,
+    sourceDate,
+    ...fields,
+    flags: {
+      stale: freshness.stale,
+      freshness: freshness.freshness,
+      ageDays: freshness.ageDays,
+      ...(freshness.issue ? { sourceDateIssue: freshness.issue } : {}),
+      unconfirmed: unmapped || (ocrOnly ? !ocrFieldsConfirmed : !ownerConfirmed),
+      unmapped,
+      ocrOnly,
+      duplicate: false,
+      conflicting: false,
+    },
+    fieldConfirmations,
+    evidenceMedium,
+    lineageKey: researchFingerprint(lineageParts),
+    contentFingerprint: "",
+    createdAt: input.now ?? new Date().toISOString(),
+  };
+  return { ...row, contentFingerprint: researchEvidenceFingerprint(row, input.artifact) };
+}
+
+const RESEARCH_FIELDS = ["phrase", "searchVolume", "competition", "trend", "relevanceScore"] as const;
+
+export function confirmResearchOcrField(row: ResearchResultRow, field: ResearchFieldConfirmation["field"], rawFieldOrKey: string, confirmedBy: "owner", confirmedAt: string): ResearchResultRow {
+  const value = row[field].parsed;
+  if (value === null || row[field].status === "missing" || row[field].status === "invalid") throw new Error(`${field} cannot be confirmed without a parsed value.`);
+  const confirmation: ResearchFieldConfirmation = { field, rawFieldOrKey, confirmedValue: value, confirmedBy, confirmedAt };
+  const fieldConfirmations = [...row.fieldConfirmations.filter((item) => item.field !== field), confirmation];
+  const allEligibleFieldsConfirmed = RESEARCH_FIELDS
+    .filter((name) => row[name].status === "confirmed" || row[name].status === "confirmed-zero")
+    .every((name) => fieldConfirmations.some((item) => item.field === name));
+  const confirmedRow = { ...row, fieldConfirmations, flags: { ...row.flags, unconfirmed: row.flags.ocrOnly ? !allEligibleFieldsConfirmed : false } };
+  return { ...confirmedRow, contentFingerprint: researchEvidenceFingerprint(confirmedRow) };
+}
+
+export function isResearchRowEligible(row: ResearchResultRow) {
+  const phraseEligible = row.phrase.status === "confirmed";
+  const numericFields = (["searchVolume", "competition", "trend", "relevanceScore"] as const)
+    .filter((field) => row[field].status === "confirmed" || row[field].status === "confirmed-zero");
+  const validFields = RESEARCH_FIELDS.filter((field) => row[field].status === "confirmed" || row[field].status === "confirmed-zero");
+  const ocrConfirmed = !row.flags.ocrOnly || validFields.every((field) => row.fieldConfirmations.some((confirmation) => confirmation.field === field));
+  return phraseEligible && numericFields.length > 0 && ocrConfirmed && !row.flags.unconfirmed && !row.flags.unmapped && !row.flags.stale && !row.flags.sourceDateIssue && !row.flags.conflicting && !row.supersededByRowId;
+}
+
+const RESEARCH_NUMERIC_FIELDS = ["searchVolume", "competition", "trend", "relevanceScore"] as const;
+
+function researchRowHasOnlySourceUnavailableMetrics(row: ResearchResultRow) {
+  return RESEARCH_NUMERIC_FIELDS.every((field) => row[field].status === "missing" || row[field].status === "source-unknown");
+}
+
+function researchRowHasBlockingTruth(row: ResearchResultRow) {
+  if (row.supersededByRowId) return false;
+  if (researchRowHasOnlySourceUnavailableMetrics(row)) {
+    return row.phrase.status !== "confirmed" || row.flags.unconfirmed || row.flags.unmapped || row.flags.stale || Boolean(row.flags.sourceDateIssue) || row.flags.conflicting;
+  }
+  return !isResearchRowEligible(row);
+}
+
+export function researchRowsForContext(rows: ResearchResultRow[], context: ResearchContext) {
+  return rows.filter((row) => row.designId === context.designId && row.productId === context.productId && row.roundId === context.roundId && row.seedVersion === context.seedVersion);
+}
+
+export type MergedResearchResult = {
+  normalizedPhrase: string;
+  rowIds: string[];
+  taskIds: string[];
+  originatingQueries: string[];
+  artifactIds: string[];
+  rows: ResearchResultRow[];
+};
+
+export function mergeResearchRowsWithLineage(rows: ResearchResultRow[]): MergedResearchResult[] {
+  const groups = new Map<string, ResearchResultRow[]>();
+  for (const row of rows.filter((item) => !item.supersededByRowId)) {
+    const key = normalizeResearchQuery(row.phrase.parsed ?? row.phrase.raw);
+    if (!key) continue;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([normalizedPhrase, grouped]) => ({
+    normalizedPhrase,
+    rowIds: grouped.map((row) => row.id),
+    taskIds: [...new Set(grouped.flatMap((row) => row.researchQueryTaskId ? [row.researchQueryTaskId] : []))],
+    originatingQueries: [...new Set(grouped.map((row) => row.researchOriginatingQuery ?? row.originatingQuery))],
+    artifactIds: [...new Set(grouped.map((row) => row.artifactId))],
+    rows: grouped,
+  }));
+}
+
+export function computeResearchCoverage(round: ResearchRound, rows: ResearchResultRow[]) {
+  const context: ResearchContext = { designId: round.designId, productId: round.productId, roundId: round.id, seedVersion: round.seedVersion };
+  const eligible = researchRowsForContext(rows, context).filter((row) => isResearchRowEligible(row) && Boolean(row.intentDimensionId));
+  return researchRequiredDimensionsForRound(round).map((dimension) => ({
+    dimensionId: dimension.id,
+    covered: eligible.some((row) => row.intentDimensionId === dimension.id),
+    rowIds: eligible.filter((row) => row.intentDimensionId === dimension.id).map((row) => row.id).sort(),
+  }));
+}
+
+function confirmedResearchNumber(field: ResearchField<number>) {
+  return (field.status === "confirmed" || field.status === "confirmed-zero") && field.parsed !== null && Number.isFinite(field.parsed)
+    ? field.parsed
+    : null;
+}
+
+/**
+ * Compact, deterministic analysis input. It exposes only active structured rows
+ * from received exact-context tasks, then round-robins the best rows per task so
+ * one large export cannot crowd every other completed task/dimension out.
+ */
+export function selectResearchSupportRowLedger(input: {
+  round: ResearchRound;
+  tasks: ResearchQueryTask[];
+  rows: ResearchResultRow[];
+}): ResearchSupportRowLedgerEntry[] {
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const completedTasks = researchQueryTasksForContext(input.tasks, context).filter((task) => task.status === "received");
+  const completedTaskById = new Map(completedTasks.map((task) => [task.id, task]));
+  const rowsByTask = new Map(completedTasks.map((task) => [task.id, [] as ResearchResultRow[]]));
+  for (const row of researchRowsForContext(input.rows, context)) {
+    const task = row.researchQueryTaskId ? completedTaskById.get(row.researchQueryTaskId) : undefined;
+    const originatingQuery = row.researchOriginatingQuery ?? row.originatingQuery;
+    if (!task
+      || !isResearchRowEligible(row)
+      || Boolean(row.supersededByRowId)
+      || row.evidenceMedium === "ocr-image"
+      || row.intentDimensionId !== task.intentDimensionId
+      || normalizeResearchQuery(originatingQuery) !== task.normalizedQuery) continue;
+    rowsByTask.get(task.id)?.push(row);
+  }
+  const compareRows = (left: ResearchResultRow, right: ResearchResultRow) => {
+    const leftVolume = confirmedResearchNumber(left.searchVolume);
+    const rightVolume = confirmedResearchNumber(right.searchVolume);
+    const leftCompetition = confirmedResearchNumber(left.competition);
+    const rightCompetition = confirmedResearchNumber(right.competition);
+    return (rightVolume ?? Number.NEGATIVE_INFINITY) - (leftVolume ?? Number.NEGATIVE_INFINITY)
+      || (leftCompetition ?? Number.POSITIVE_INFINITY) - (rightCompetition ?? Number.POSITIVE_INFINITY)
+      || normalizeResearchQuery(left.phrase.parsed ?? left.phrase.raw).localeCompare(normalizeResearchQuery(right.phrase.parsed ?? right.phrase.raw))
+      || left.id.localeCompare(right.id);
+  };
+  for (const rows of rowsByTask.values()) rows.sort(compareRows);
+  const ledger: ResearchSupportRowLedgerEntry[] = [];
+  for (let rowIndex = 0; ledger.length < RESEARCH_SUPPORT_ROW_LEDGER_LIMIT; rowIndex += 1) {
+    let added = false;
+    for (const task of completedTasks) {
+      const row = rowsByTask.get(task.id)?.[rowIndex];
+      if (!row) continue;
+      ledger.push({
+        rowId: row.id,
+        phrase: String(row.phrase.parsed ?? row.phrase.raw).trim(),
+        originatingQuery: row.researchOriginatingQuery ?? row.originatingQuery,
+        intentDimensionId: task.intentDimensionId,
+        researchQueryTaskId: task.id,
+        confirmedSearchVolume: confirmedResearchNumber(row.searchVolume),
+        confirmedCompetition: confirmedResearchNumber(row.competition),
+      });
+      added = true;
+      if (ledger.length === RESEARCH_SUPPORT_ROW_LEDGER_LIMIT) break;
+    }
+    if (!added) break;
+  }
+  return ledger;
+}
+
+function researchRepeatRate(rows: ResearchResultRow[]) {
+  const eligible = rows.filter(isResearchRowEligible);
+  if (!eligible.length) return 0;
+  const unique = new Set(eligible.map((row) => normalizeResearchQuery(row.phrase.parsed ?? row.phrase.raw))).size;
+  return (eligible.length - unique) / eligible.length;
+}
+
+function independentlyResearchableQuery(query: string) {
+  const tokens = query.normalize("NFKC").trim().split(/\s+/).filter(Boolean);
+  return tokens.length >= 2 && tokens.length <= 4 && tokens.every((token) => /^[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*$/u.test(token));
+}
+
+export function validateAndRankGapCandidates(input: {
+  round: ResearchRound;
+  tasks: ResearchQueryTask[];
+  rows: ResearchResultRow[];
+  rawDrafts: GapCandidateDraft[];
+  origin?: ResearchGapAnalysisOrigin;
+  id?: string;
+  now?: string;
+}): ResearchGapAnalysisAttempt {
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const rawCount = input.rawDrafts.length;
+  const emptyAudit = { rawCount, acceptedRawOrdinals: [] as number[], rejections: [] as GapCandidateRejection[] };
+  if (rawCount !== 25) {
+    return { ...context, id: input.id ?? createId("research-gap-analysis"), rawDrafts: input.rawDrafts, rejectionAudit: { ...emptyAudit, rejections: [{ reason: "raw-count-not-25", rawOrdinal: 0, supportingRowIds: [] }] }, rankedCandidates: [], status: "invalid", createdAt: input.now ?? new Date().toISOString(), ...(input.origin ? { origin: input.origin } : {}) };
+  }
+  const dimensions = researchRequiredDimensionsForRound(input.round);
+  const coverage = computeResearchCoverage(input.round, input.rows);
+  const covered = new Set(coverage.filter((item) => item.covered).map((item) => item.dimensionId));
+  const dimensionOrder = new Map(dimensions.map((dimension) => [dimension.id, dimension.ordinal]));
+  const exactTasks = researchQueryTasksForContext(input.tasks, context);
+  const completedTaskIds = new Set(exactTasks.filter((task) => task.status === "received").map((task) => task.id));
+  const completedQueries = new Set(exactTasks.filter((task) => task.status === "received").map((task) => task.normalizedQuery));
+  const allRowsById = new Map(input.rows.map((row) => [row.id, row]));
+  const exactRows = researchRowsForContext(input.rows, context);
+  const exactRowsById = new Map(exactRows.map((row) => [row.id, row]));
+  const seenDrafts = new Set<string>();
+  const valid: GapCandidate[] = [];
+  const rejections: GapCandidateRejection[] = [];
+  for (let index = 0; index < input.rawDrafts.length; index += 1) {
+    const draft = input.rawDrafts[index];
+    const rawOrdinal = index + 1;
+    const normalizedQuery = normalizeResearchQuery(draft.query ?? "");
+    const supportIds = Array.isArray(draft.supportingRowIds) ? [...draft.supportingRowIds] : [];
+    let reason: GapCandidateRejectionReason | undefined;
+    if (completedQueries.has(normalizedQuery)) reason = "completed-query-duplicate";
+    else if (seenDrafts.has(normalizedQuery)) reason = "candidate-duplicate";
+    else if (!dimensionOrder.has(draft.targetDimension)) reason = "unknown-target";
+    else if (covered.has(draft.targetDimension)) reason = "covered-target";
+    else if (!draft.extensionLogic?.trim()) reason = "missing-extension-logic";
+    else if (!supportIds.length) reason = "empty-support";
+    else if (!independentlyResearchableQuery(draft.query ?? "")) reason = "non-researchable-phrase";
+    const supports = supportIds.map((id) => exactRowsById.get(id)).filter((row): row is ResearchResultRow => Boolean(row));
+    if (!reason) {
+      const firstMissing = supportIds.find((id) => !allRowsById.has(id));
+      const firstCrossContext = supportIds.find((id) => allRowsById.has(id) && !exactRowsById.has(id));
+      const firstInactive = supports.find((row) => Boolean(row.supersededByRowId));
+      const firstIneligible = supports.find((row) => !isResearchRowEligible(row));
+      const firstUnstructured = supports.find((row) => row.evidenceMedium === "ocr-image");
+      const firstNonCompleted = supports.find((row) => !row.researchQueryTaskId || !completedTaskIds.has(row.researchQueryTaskId));
+      const firstCoveringTarget = supports.find((row) => row.intentDimensionId === draft.targetDimension);
+      if (firstMissing) reason = "missing-support";
+      else if (firstCrossContext) reason = "cross-context-support";
+      else if (firstInactive) reason = "inactive-support";
+      else if (firstIneligible) reason = "ineligible-support";
+      else if (firstUnstructured) reason = "unstructured-support";
+      else if (firstNonCompleted) reason = "non-completed-support";
+      else if (firstCoveringTarget) reason = "support-covers-target";
+      else {
+        const supportLanguage = supports.flatMap((row) => normalizeResearchQuery(row.phrase.parsed ?? row.phrase.raw).split(" ")).filter((token) => token.length >= 3);
+        const extension = normalizeResearchQuery(draft.extensionLogic);
+        if (!supportLanguage.some((token) => extension.includes(token))) reason = "missing-extension-logic";
+      }
+    }
+    if (reason) {
+      rejections.push({ reason, rawOrdinal, ...(normalizedQuery ? { normalizedQuery } : {}), targetDimension: draft.targetDimension, supportingRowIds: supportIds });
+      seenDrafts.add(normalizedQuery);
+      continue;
+    }
+    seenDrafts.add(normalizedQuery);
+    valid.push({
+      ...draft,
+      id: `gap-candidate:${researchFingerprint({ context, rawOrdinal, normalizedQuery, targetDimension: draft.targetDimension })}`,
+      rawOrdinal,
+      normalizedQuery,
+      supportingEligibleRowCount: supports.length,
+      // Support-row metrics belong to the researched support phrase, never to
+      // this unresearched candidate hypothesis.
+      confirmedSearchVolume: null,
+      confirmedCompetition: null,
+    });
+  }
+  valid.sort((left, right) => (dimensionOrder.get(left.targetDimension) ?? Number.MAX_SAFE_INTEGER) - (dimensionOrder.get(right.targetDimension) ?? Number.MAX_SAFE_INTEGER)
+    || right.supportingEligibleRowCount - left.supportingEligibleRowCount
+    || left.normalizedQuery.localeCompare(right.normalizedQuery)
+    || left.rawOrdinal - right.rawOrdinal);
+  const proposalReady = valid.length >= 15;
+  return {
+    ...context,
+    id: input.id ?? createId("research-gap-analysis"),
+    rawDrafts: input.rawDrafts,
+    rejectionAudit: { rawCount, acceptedRawOrdinals: valid.map((candidate) => candidate.rawOrdinal), rejections },
+    rankedCandidates: proposalReady ? valid.slice(0, 25) : [],
+    status: proposalReady ? "proposal-ready" : "insufficient-valid",
+    createdAt: input.now ?? new Date().toISOString(),
+    ...(input.origin ? { origin: input.origin } : {}),
+  };
+}
+
+export function deriveAdaptiveResearchAction(input: {
+  round: ResearchRound;
+  tasks: ResearchQueryTask[];
+  rows: ResearchResultRow[];
+  conclusion?: ResearchConclusion;
+  gapAnalysis?: ResearchGapAnalysisAttempt;
+}): AdaptiveResearchAction {
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const tasks = researchQueryTasksForContext(input.tasks, context);
+  const exactRows = researchRowsForContext(input.rows, context);
+  const coverage = computeResearchCoverage(input.round, input.rows);
+  const repeatRate = researchRepeatRate(exactRows);
+  const base = { coverage, repeatRate };
+  if (tasks.length < 3 || tasks.length > 5) {
+    const blockingInput = "Select exactly 3–5 Individual queries from the active Bulk anchors.";
+    return { ...base, persistedDecision: "next-round", actionKind: "collect-missing-input", reasonCodes: ["individual-task-count"], nextAction: blockingInput, blockingInput };
+  }
+  for (const task of tasks) {
+    const taskRows = exactRows.filter((row) => row.researchQueryTaskId === task.id);
+    const lineageBlocker = taskRows.find((row) => row.flags.conflicting || row.flags.unmapped || normalizeResearchQuery(row.researchOriginatingQuery ?? "") !== task.normalizedQuery);
+    if (lineageBlocker) {
+      const blockingInput = `Correct the explicit task assignment for query “${task.query}”.`;
+      return { ...base, persistedDecision: "next-round", actionKind: "collect-missing-input", reasonCodes: ["task-lineage-blocker"], nextAction: blockingInput, blockingInput };
+    }
+    if (task.status !== "received") {
+      const blockingInput = task.status === "error" ? `Recover the error on Individual query “${task.query}”.` : `Upload the owner export to the exact task for “${task.query}”.`;
+      return { ...base, persistedDecision: "next-round", actionKind: "collect-missing-input", reasonCodes: [`task-${task.status}`], nextAction: blockingInput, blockingInput };
+    }
+    if (!taskRows.some((row) => isResearchRowEligible(row) && row.evidenceMedium !== "ocr-image")) {
+      const blockingInput = `Collect one eligible structured row for Individual query “${task.query}”.`;
+      return { ...base, persistedDecision: "next-round", actionKind: "collect-missing-input", reasonCodes: ["task-no-eligible-structured-row"], nextAction: blockingInput, blockingInput };
+    }
+  }
+  const uncovered = coverage.filter((item) => !item.covered);
+  if (uncovered.length) {
+    const gap = researchRequiredDimensionsForRound(input.round).find((dimension) => dimension.id === uncovered[0].dimensionId);
+    if (input.gapAnalysis?.status === "proposal-ready" && exactResearchContext(input.gapAnalysis, context) && input.gapAnalysis.rankedCandidates.length >= 15 && input.gapAnalysis.rankedCandidates.length <= 25) {
+      return { ...base, persistedDecision: "next-round", actionKind: "propose-gap-round", reasonCodes: ["named-intent-gap"], nextAction: `Review the ${input.gapAnalysis.rankedCandidates.length} ranked candidates for the named ${gap?.label ?? uncovered[0].dimensionId} gap; no round or task is created automatically.`, gapProposal: input.gapAnalysis.rankedCandidates, rejectionAudit: input.gapAnalysis.rejectionAudit };
+    }
+    const blockingInput = `Collect one corrected product-research-analysis output with exactly 25 raw drafts for the named ${gap?.label ?? uncovered[0].dimensionId} gap.`;
+    return { ...base, persistedDecision: "next-round", actionKind: "collect-missing-input", reasonCodes: [input.gapAnalysis?.rejectionAudit.rejections[0]?.reason ?? "gap-analysis-missing"], nextAction: blockingInput, blockingInput, ...(input.gapAnalysis ? { rejectionAudit: input.gapAnalysis.rejectionAudit } : {}) };
+  }
+  const persistedDecision = input.conclusion?.decision ?? "next-round";
+  if (persistedDecision === "retain") return { ...base, persistedDecision, actionKind: "close-research", reasonCodes: [repeatRate >= 0.5 ? "coverage-complete-high-repeat" : "coverage-complete"], nextAction: "Ask the owner to review and approve this exact retained research context." };
+  if (persistedDecision === "defer") return { ...base, persistedDecision, actionKind: "close-research", reasonCodes: ["coverage-complete-defer"], nextAction: "Close research and pause or redirect this concept; Listing Brief stays locked." };
+  const blockingInput = input.conclusion?.nextAction ?? "Resolve the first evidence or fit blocker for this exact context.";
+  return { ...base, persistedDecision, actionKind: "collect-missing-input", reasonCodes: ["legacy-decision-blocker"], nextAction: blockingInput, blockingInput };
+}
+
+export function deriveResearchOpportunity(rows: ResearchResultRow[]): ResearchFitAssessment {
+  const eligible = rows.filter(isResearchRowEligible);
+  if (!eligible.length) return "missing";
+  return eligible.some((row) => (row.searchVolume.parsed ?? 0) > 0 || (row.trend.parsed ?? 0) > 0 || (row.relevanceScore.parsed ?? 0) > 0) ? "supported" : "weak";
+}
+
+export function saveResearchResultBatch(stateInput: EtsyOperationsState, input: {
+  round: ResearchRound;
+  batch?: ResearchBatch;
+  artifact: EvidenceArtifact;
+  rows: ResearchResultRow[];
+  attemptedFileOrSource: string;
+  now?: string;
+}) {
+  const state = hydrateResearchResults(stateInput);
+  const now = input.now ?? new Date().toISOString();
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  if (!state.researchRounds.some((round) => round.id === input.round.id)) {
+    throw new Error("Save the exact active research round before saving a Research Batch.");
+  }
+  if (input.batch && !researchBatchMatchesContext(input.batch, context)) throw new Error("Research Batch context does not match this exact active round.");
+  const queryTask = input.artifact.researchQueryTaskId ? state.researchQueryTasks.find((task) => task.id === input.artifact.researchQueryTaskId) : undefined;
+  if (input.artifact.researchQueryTaskId && (!queryTask
+    || !exactResearchContext(queryTask, context)
+    || normalizeResearchQuery(input.artifact.researchOriginatingQuery ?? "") !== queryTask.normalizedQuery
+    || input.artifact.researchIntentDimensionId !== queryTask.intentDimensionId)) {
+    throw new Error("This file is attached to the wrong Individual task. Explicitly reassign it; filename and upload order cannot create lineage.");
+  }
+  if (queryTask && input.rows.some((row) => row.researchQueryTaskId !== queryTask.id || normalizeResearchQuery(row.researchOriginatingQuery ?? "") !== queryTask.normalizedQuery || row.intentDimensionId !== queryTask.intentDimensionId)) {
+    throw new Error("Normalized rows do not match the exact Individual task/query target.");
+  }
+  if (input.batch) {
+    const roundLedger = researchActiveInputLedgerForRound(input.round);
+    const batchLedgerIsExact = input.batch.seedLedger.length === roundLedger.length
+      && input.batch.seedLedger.every((seed, index) => seed.id === roundLedger[index]?.id && seed.ordinal === roundLedger[index]?.ordinal && seed.query === roundLedger[index]?.query);
+    if (!batchLedgerIsExact || !input.batch.selectedSeedIds.length || input.batch.selectedSeedIds.some((id) => !roundLedger.some((seed) => seed.id === id))) {
+      throw new Error("Research Batch seed identity is not valid for this exact frozen round.");
+    }
+  }
+  const sourceDate = input.artifact.researchSourceDate ?? input.artifact.periodStart ?? "";
+  // Keep save-time validation deterministic: callers may supply a capture/save
+  // timestamp for tests or an imported artifact, so future-date checks must use
+  // that same clock rather than the machine's current calendar date.
+  const dateCheck = assessResearchFreshness(sourceDate, input.artifact.researchFreshnessPolicy, hongKongCalendarDate(now));
+  if (!dateCheck.eligible) throw new Error(`Correct the ${dateCheck.issue ?? "stale"} source date before saving this artifact.`);
+  const artifact = {
+    ...input.artifact,
+    ...(input.batch ? { researchBatchId: input.batch.id, researchSeedIds: input.artifact.researchSeedIds ?? input.batch.selectedSeedIds } : {}),
+    rawFingerprint: input.artifact.rawFingerprint ?? researchFingerprint({
+      contentText: input.artifact.contentText,
+      dataUrl: input.artifact.dataUrl,
+      sourceDate,
+      fileName: input.artifact.fileName,
+      mimeType: input.artifact.mimeType,
+    }),
+  };
+  if (input.batch) {
+    const batch = input.batch;
+    const artifactSeedIds = researchArtifactSeedIds(batch, artifact);
+    if (!artifactSeedIds.length || artifactSeedIds.some((id) => !batch.selectedSeedIds.includes(id))) {
+      throw new Error("Choose a valid inherited seed or per-artifact override before saving.");
+    }
+    if (!artifact.researchArtifactOrdinal || artifact.researchArtifactOrdinal < 1) {
+      throw new Error("This preview is missing its stable artifact order. Recreate that item without clearing its siblings.");
+    }
+    if (!artifact.researchCapturedAt || !artifact.researchCapturedAtHk) {
+      throw new Error("This preview is missing its automatic Hong Kong capture time. Recreate that item without clearing its siblings.");
+    }
+    if (artifact.mimeType.startsWith("image/") && (!artifact.dataUrl || artifact.researchRawRecovery?.persisted === false)) {
+      throw new Error("Reattach the original screenshot for this exact artifact before saving; sibling batch items remain available.");
+    }
+  }
+  const exactRawArtifact = state.artifacts.find((item) => item.researchRoundId === context.roundId
+    && item.researchSeedVersion === context.seedVersion
+    && item.targetId === context.designId
+    && item.rawFingerprint === artifact.rawFingerprint);
+  const batchInput = input.batch;
+  const updateBatch = (current: ResearchBatch[], status: ResearchBatchStatus, artifactId?: string) => {
+    if (!batchInput) return current;
+    const currentBatch = current.find((item) => item.id === batchInput.id);
+    const base = currentBatch ?? batchInput;
+    // The incoming batch may still contain unsaved sibling preview IDs. Only
+    // durable artifacts may be carried forward; the current artifact is the
+    // sole new ID allowed into this save operation.
+    const savedArtifactIds = new Set(state.artifacts
+      .filter((item) => item.researchBatchId === batchInput.id)
+      .map((item) => item.id));
+    const retainedArtifactIds = base.artifactIds.filter((id) => savedArtifactIds.has(id));
+    const artifactIds = artifactId
+      ? [...new Set([...retainedArtifactIds, artifactId])]
+      : retainedArtifactIds;
+    const next = { ...base, artifactIds, status, updatedAt: now };
+    return [next, ...current.filter((item) => item.id !== next.id)];
+  };
+  if (exactRawArtifact) {
+    const existingRow = state.researchResultRows.find((row) => row.artifactId === exactRawArtifact.id);
+    const fingerprint = artifact.rawFingerprint;
+    const existingAudit = state.researchDuplicateAuditEvents.find((audit) => audit.existingArtifactId === exactRawArtifact.id && audit.fingerprint === fingerprint && audit.kind === "artifact");
+    const audit = existingAudit
+      ? state.researchDuplicateAuditEvents.map((item) => item.id === existingAudit.id ? { ...item, attemptedFileOrSource: input.attemptedFileOrSource, attemptedAt: now, lastSeenAt: now, occurrenceCount: item.occurrenceCount + 1, ...(input.batch ? { researchBatchId: input.batch.id, attemptedArtifactId: artifact.id } : {}) } : item)
+      : [{ id: researchFingerprint({ existingArtifactId: exactRawArtifact.id, fingerprint, kind: "artifact" }), existingArtifactId: exactRawArtifact.id, existingRowId: existingRow?.id ?? `raw:${exactRawArtifact.id}`, fingerprint, attemptedFileOrSource: input.attemptedFileOrSource, attemptedAt: now, lastSeenAt: now, occurrenceCount: 1, kind: "artifact" as const, ...(input.batch ? { researchBatchId: input.batch.id, attemptedArtifactId: artifact.id } : {}) }, ...state.researchDuplicateAuditEvents];
+    return { state: { ...state, researchBatches: updateBatch(state.researchBatches, "partial"), researchDuplicateAuditEvents: audit }, savedCount: 0, duplicateCount: 1, conflictCount: 0 };
+  }
+  let rows = [...state.researchResultRows];
+  let audits = [...state.researchDuplicateAuditEvents];
+  let savedCount = 0;
+  let duplicateCount = 0;
+  let conflictCount = 0;
+  let decisionAffectingCount = 0;
+  for (let candidate of input.rows) {
+    if (input.batch) {
+      const permittedSeedIds = researchArtifactSeedIds(input.batch, artifact);
+      const contextMatches = candidate.researchBatchId === input.batch.id
+        && candidate.roundId === context.roundId
+        && candidate.designId === context.designId
+        && candidate.productId === context.productId
+        && candidate.seedVersion === context.seedVersion;
+      if (!contextMatches || !candidate.originatingSeedId || !permittedSeedIds.includes(candidate.originatingSeedId)) {
+        candidate = { ...candidate, researchBatchId: input.batch.id, flags: { ...candidate.flags, unmapped: true, unconfirmed: true } };
+      }
+    }
+    const artifactForRow = (row: ResearchResultRow) => row.artifactId === artifact.id ? artifact : state.artifacts.find((item) => item.id === row.artifactId);
+    const candidateFingerprint = researchEvidenceFingerprint(candidate, artifact);
+    const exact = rows.find((row) => researchEvidenceFingerprint(row, artifactForRow(row)) === candidateFingerprint);
+    if (exact) {
+      duplicateCount += 1;
+      rows = rows.map((row) => row.id === exact.id ? { ...row, flags: { ...row.flags, duplicate: true } } : row);
+      const existingAudit = audits.find((audit) => audit.existingRowId === exact.id && audit.fingerprint === candidateFingerprint);
+      audits = existingAudit
+        ? audits.map((audit) => audit.id === existingAudit.id ? { ...audit, attemptedFileOrSource: input.attemptedFileOrSource, attemptedAt: now, lastSeenAt: now, occurrenceCount: audit.occurrenceCount + 1, ...(input.batch ? { researchBatchId: input.batch.id, attemptedArtifactId: artifact.id } : {}) } : audit)
+        : [{ id: researchFingerprint({ existingRowId: exact.id, fingerprint: candidateFingerprint }), existingArtifactId: exact.artifactId, existingRowId: exact.id, fingerprint: candidateFingerprint, attemptedFileOrSource: input.attemptedFileOrSource, attemptedAt: now, lastSeenAt: now, occurrenceCount: 1, kind: "row" as const, ...(input.batch ? { researchBatchId: input.batch.id, attemptedArtifactId: artifact.id } : {}) }, ...audits];
+      continue;
+    }
+    const candidateValueFingerprint = researchValueFingerprint(candidate);
+    const sameValueRows = rows.filter((row) => row.lineageKey === candidate.lineageKey && researchValueFingerprint(row) === candidateValueFingerprint);
+    const candidateQuality = researchEvidenceQuality(candidate, artifact);
+    const betterExisting = sameValueRows
+      .filter((row) => !row.supersededByRowId && researchEvidenceQuality(row, artifactForRow(row)) > candidateQuality)
+      .sort((left, right) => researchEvidenceQuality(right, artifactForRow(right)) - researchEvidenceQuality(left, artifactForRow(left)) || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+    let nextCandidate = { ...candidate, contentFingerprint: candidateFingerprint };
+    if (betterExisting) {
+      nextCandidate = { ...nextCandidate, supersededByRowId: betterExisting.id };
+    } else {
+      rows = rows.map((row) => row.lineageKey === candidate.lineageKey
+        && researchValueFingerprint(row) === candidateValueFingerprint
+        && researchEvidenceQuality(row, artifactForRow(row)) < candidateQuality
+        ? { ...row, supersededByRowId: candidate.id, flags: { ...row.flags, conflicting: false } }
+        : row);
+      decisionAffectingCount += 1;
+    }
+    rows.push(nextCandidate);
+    rows = reconcileResearchLineageConflicts(rows, candidate.lineageKey);
+    if (!nextCandidate.supersededByRowId && rows.some((row) => row.id === candidate.id && row.flags.conflicting)) conflictCount += 1;
+    savedCount += 1;
+  }
+  // A non-identical raw artifact whose rows are exact duplicates is still an
+  // auditable batch artifact. Only the earlier exact-raw branch omits it.
+  const shouldSaveArtifact = savedCount > 0 || input.rows.length === 0 || Boolean(input.batch && duplicateCount > 0);
+  const savedArtifact = {
+    ...artifact,
+    researchArtifactStatus: conflictCount ? "conflicting" as const : input.rows.length === 0 ? "visual-review-only" as const : savedCount ? "saved" as const : "duplicate-audited" as const,
+  };
+  const artifacts = shouldSaveArtifact && !state.artifacts.some((item) => item.id === artifact.id) ? [savedArtifact, ...state.artifacts] : state.artifacts;
+  const duplicateOnlyAttempt = input.rows.length > 0 && savedCount === 0 && duplicateCount === input.rows.length;
+  const researchRounds = state.researchRounds.map((round) => {
+    if (round.id !== input.round.id) return round;
+    const artifactIds = shouldSaveArtifact && !round.artifactIds.includes(artifact.id) ? [...round.artifactIds, artifact.id] : round.artifactIds;
+    if (duplicateOnlyAttempt) return { ...round, artifactIds, updatedAt: now };
+    if (decisionAffectingCount === 0) return { ...round, artifactIds, updatedAt: now };
+    return {
+      ...round,
+      status: (conflictCount ? "next-round-needed" : "saved-awaiting-review") as ResearchRoundStatus,
+      artifactIds,
+      conclusion: undefined,
+      ownerGateId: undefined,
+      updatedAt: now,
+    };
+  });
+  const batchStatus: ResearchBatchStatus = conflictCount ? "conflicting" : duplicateOnlyAttempt ? "partial" : savedCount < input.rows.length ? "partial" : "saved";
+  const researchQueryTasks = queryTask && shouldSaveArtifact && !duplicateOnlyAttempt
+    ? state.researchQueryTasks.map((task) => task.id !== queryTask.id ? task : updateResearchQueryTaskFromArtifact(task, savedArtifact, rows.some((row) => row.artifactId === artifact.id && isResearchRowEligible(row)) ? "received" : "error", now))
+    : state.researchQueryTasks;
+  return { state: { ...state, artifacts, researchRounds, researchBatches: updateBatch(state.researchBatches, batchStatus, shouldSaveArtifact ? artifact.id : undefined), researchResultRows: rows, researchQueryTasks, researchDuplicateAuditEvents: audits }, savedCount, duplicateCount, conflictCount };
+}
+
+export function buildResearchCoachConclusion(input: {
+  round: ResearchRound;
+  rows: ResearchResultRow[];
+  buyerOccasionFit: ResearchFitAssessment;
+  productFit: ResearchFitAssessment;
+  opportunity: ResearchFitAssessment;
+  now?: string;
+}): ResearchConclusion {
+  const context: ResearchContext = { designId: input.round.designId, productId: input.round.productId, roundId: input.round.id, seedVersion: input.round.seedVersion };
+  const exactRows = researchRowsForContext(input.rows, context);
+  const decisionRows = exactRows.filter((row) => !row.supersededByRowId);
+  const eligibleRows = decisionRows.filter(isResearchRowEligible);
+  const sourceUnavailableRows = decisionRows.filter((row) => !isResearchRowEligible(row) && researchRowHasOnlySourceUnavailableMetrics(row));
+  const blockingTruth: string[] = [];
+  if (!decisionRows.length) blockingTruth.push("No saved result rows exist for this exact research round.");
+  if (decisionRows.length && !eligibleRows.length) blockingTruth.push("No eligible numeric research signal exists; the source reported Unknown or missing values for the selected rows.");
+  if (decisionRows.some(researchRowHasBlockingTruth)) blockingTruth.push("Missing, invalid, OCR-only, unconfirmed, stale, future-dated, or conflicting truth remains.");
+  if (input.buyerOccasionFit === "missing") blockingTruth.push("Buyer or buying occasion fit is missing.");
+  if (input.productFit === "missing") blockingTruth.push("Product fit is missing.");
+  if (input.opportunity === "missing") blockingTruth.push("The next targeted opportunity signal is missing.");
+  let decision: ResearchDecision;
+  let nextAction: string;
+  if (blockingTruth.length) {
+    decision = "next-round";
+    nextAction = decisionRows.length ? "Resolve the first visible blocked truth for this exact round." : "Add one structured eRank or EverBee result for this exact round.";
+  } else if (input.buyerOccasionFit === "weak" || input.productFit === "weak" || input.opportunity === "weak") {
+    decision = "defer";
+    nextAction = "Pause this concept and return to the Product Development shortlist.";
+  } else {
+    decision = "retain";
+    nextAction = "Request owner approval for this exact design, product, round, and seed version.";
+  }
+  return {
+    decision,
+    buyerProductFit: `Buyer/occasion fit: ${input.buyerOccasionFit}; product fit: ${input.productFit}.`,
+    evidenceBasis: decisionRows.length
+      ? [`${decisionRows.length} active exact-context supplemental row(s) from eRank/EverBee.`, ...(sourceUnavailableRows.length ? [`${sourceUnavailableRows.length} row(s) reported Unknown or missing values and were excluded from numeric comparison.`] : [])]
+      : [],
+    blockingTruth,
+    nextAction,
+    reviewSignal: decision === "next-round" ? "Review when the named blocker has eligible exact-context evidence." : decision === "defer" ? "Review only if buyer, product, or opportunity evidence materially changes." : "Review the exact owner gate before opening Listing Brief.",
+    createdAt: input.now ?? new Date().toISOString(),
+  };
+}
+
+export function researchPreviewKey(context: ResearchContext) {
+  return `etsy-research-preview:${encodeURIComponent(context.designId)}:${encodeURIComponent(context.productId)}:${encodeURIComponent(context.roundId)}:${encodeURIComponent(context.seedVersion)}`;
+}
+
+export function serializeResearchPreview(preview: unknown) { return JSON.stringify(preview); }
+export function deserializeResearchPreview<T = Record<string, unknown>>(value: string): T | null {
+  try {
+    const parsed = JSON.parse(value) as T;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch { return null; }
+}
+
+export const RESEARCH_OCR_TIMEOUT_MS = 15_000;
+export type ResearchOcrFailureReason = "worker-load-failed" | "recognize-failed" | "timed-out" | "unreadable";
+export type ResearchOcrLifecycle = {
+  status: "succeeded" | "visual-review-only";
+  attemptId: string;
+  completedAt: string;
+  failureReason?: ResearchOcrFailureReason;
+  message?: string;
+};
+export type ResearchOcrOutcome = { text: string; lifecycle: ResearchOcrLifecycle };
+export type ResearchOcrWorker = {
+  recognize: (image: unknown) => Promise<{ data: { text?: string } }>;
+  terminate: () => Promise<unknown> | unknown;
+};
+
+class ResearchOcrTimeoutError extends Error {}
+
+function researchOcrFailureMessage(reason: ResearchOcrFailureReason) {
+  if (reason === "timed-out") return "OCR reached its bounded time limit. The screenshot is ready to save for visual review only.";
+  if (reason === "unreadable") return "OCR returned no readable text. The screenshot is ready to save for visual review only.";
+  if (reason === "worker-load-failed") return "OCR worker or language assets could not load. The screenshot is ready to save for visual review only.";
+  return "OCR could not read this screenshot. The screenshot is ready to save for visual review only.";
+}
+
+async function terminateResearchOcrWorker(worker: ResearchOcrWorker, timeoutMs: number) {
+  try {
+    await Promise.race([
+      Promise.resolve(worker.terminate()),
+      new Promise<void>((resolve) => setTimeout(resolve, Math.max(1, Math.min(timeoutMs, 250)))),
+    ]);
+  } catch { /* Termination was requested; a worker cleanup fault must not trap the preview in loading. */ }
+}
+
+/**
+ * One terminal, bounded OCR attempt shared by initial screenshot preview and Retry OCR.
+ * Late worker/recognition settlement has no state callback and therefore cannot replace the returned terminal outcome.
+ */
+export async function runBoundedResearchOcr(input: {
+  attemptId: string;
+  image: unknown;
+  createWorker: () => Promise<ResearchOcrWorker>;
+  prepareImage?: () => Promise<unknown>;
+  timeoutMs?: number;
+  now?: () => string;
+}): Promise<ResearchOcrOutcome> {
+  const timeoutMs = Math.max(1, input.timeoutMs ?? RESEARCH_OCR_TIMEOUT_MS);
+  const now = input.now ?? (() => new Date().toISOString());
+  let worker: ResearchOcrWorker | undefined;
+  let terminal = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const operation = (async () => {
+    const image = input.prepareImage ? await input.prepareImage() : input.image;
+    const created = await input.createWorker();
+    if (terminal) {
+      void terminateResearchOcrWorker(created, timeoutMs);
+      throw new ResearchOcrTimeoutError();
+    }
+    worker = created;
+    return created.recognize(image);
+  })();
+  // The raced operation can reject after timeout. Keep that late rejection handled.
+  void operation.catch(() => undefined);
+
+  try {
+    const result = await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new ResearchOcrTimeoutError()), timeoutMs);
+      }),
+    ]);
+    const text = String(result.data.text ?? "").trim();
+    if (!text) {
+      const failureReason: ResearchOcrFailureReason = "unreadable";
+      return { text: "", lifecycle: { status: "visual-review-only", attemptId: input.attemptId, completedAt: now(), failureReason, message: researchOcrFailureMessage(failureReason) } };
+    }
+    return { text, lifecycle: { status: "succeeded", attemptId: input.attemptId, completedAt: now() } };
+  } catch (error) {
+    const failureReason: ResearchOcrFailureReason = error instanceof ResearchOcrTimeoutError
+      ? "timed-out"
+      : worker ? "recognize-failed" : "worker-load-failed";
+    return { text: "", lifecycle: { status: "visual-review-only", attemptId: input.attemptId, completedAt: now(), failureReason, message: researchOcrFailureMessage(failureReason) } };
+  } finally {
+    terminal = true;
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    if (worker) await terminateResearchOcrWorker(worker, timeoutMs);
+  }
+}
+
+export type ResearchPreviewRecoveryAction =
+  | { type: "mark-error"; id: string; error: string }
+  | { type: "clear-save-error" | "retry" | "reparse" | "reattach"; id: string };
+
+export function reduceResearchPreviewRecovery<T extends { id: string; error?: string }>(items: T[], action: ResearchPreviewRecoveryAction) {
+  return items.map((item) => item.id !== action.id ? item : action.type === "mark-error"
+    ? { ...item, error: action.error }
+    : { ...item, error: undefined });
+}
+
+export async function settleResearchPreviewAttempts<T extends { id: string }>(items: T[], attempt: (item: T) => Promise<void>) {
+  const outcomes = await Promise.all(items.map(async (item) => {
+    try { await attempt(item); return { id: item.id, ok: true as const }; }
+    catch (error) { return { id: item.id, ok: false as const, error: error instanceof Error ? error.message : "Research preview action failed." }; }
+  }));
+  const successfulIds = outcomes.filter((outcome) => outcome.ok).map((outcome) => outcome.id);
+  const failures = outcomes.filter((outcome): outcome is Extract<typeof outcomes[number], { ok: false }> => !outcome.ok).map((outcome) => ({ id: outcome.id, error: outcome.error }));
+  return { successfulIds, failures };
+}
+
+export async function persistResearchStateAfterImmediatePublish<T>(next: T, publish: (value: T) => void, persist: (value: T) => Promise<void>) {
+  publish(next);
+  try {
+    await persist(next);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isListingBriefEligibleForResearchContext(stateInput: EtsyOperationsState, context: ResearchContext) {
+  const state = hydrateResearchResults(stateInput);
+  const round = state.researchRounds.find((item) => item.id === context.roundId && item.designId === context.designId && item.productId === context.productId && item.seedVersion === context.seedVersion);
+  if (!round || round.status !== "owner-approved" || !round.ownerGateId) return false;
+  const adaptiveTasks = researchQueryTasksForContext(state.researchQueryTasks, context);
+  if (adaptiveTasks.length) {
+    const gapAnalysis = [...state.researchGapAnalysisAttempts].filter((attempt) => exactResearchContext(attempt, context)).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    const adaptive = deriveAdaptiveResearchAction({ round, tasks: state.researchQueryTasks, rows: state.researchResultRows, conclusion: round.conclusion, gapAnalysis });
+    if (round.conclusion?.decision !== "retain" || adaptive.actionKind !== "close-research" || adaptive.persistedDecision !== "retain" || adaptive.coverage.some((item) => !item.covered)) return false;
+  }
+  return state.gates.some((gate) => gate.id === round.ownerGateId
+    && gate.status === "approved-for-draft"
+    && gate.researchContext?.gateType === "research-to-listing-brief"
+    && gate.researchContext.designId === context.designId
+    && gate.researchContext.productId === context.productId
+    && gate.researchContext.roundId === context.roundId
+    && gate.researchContext.seedVersion === context.seedVersion);
+}
+
+export function latestResearchRoundForDesignProduct(stateInput: EtsyOperationsState, designId: string, productId: string) {
+  const state = hydrateResearchResults(stateInput);
+  return [...state.researchRounds]
+    .filter((round) => round.designId === designId && round.productId === productId && round.seedVersion === SHORT_INTENT_V2_VERSION)
+    .sort((left, right) => right.roundNumber - left.roundNumber || right.updatedAt.localeCompare(left.updatedAt))[0];
+}
+
+export function latestResearchContextForDesignProduct(stateInput: EtsyOperationsState, designId: string, productId: string): ResearchContext | undefined {
+  const round = latestResearchRoundForDesignProduct(stateInput, designId, productId);
+  return round ? { designId, productId, roundId: round.id, seedVersion: round.seedVersion } : undefined;
+}
+
+export function isLatestResearchContext(stateInput: EtsyOperationsState, context: ResearchContext) {
+  const latest = latestResearchContextForDesignProduct(stateInput, context.designId, context.productId);
+  return Boolean(latest && latest.roundId === context.roundId && latest.seedVersion === context.seedVersion);
+}
+
+export function deriveListingBriefSurfaceAccess(stateInput: EtsyOperationsState, designId: string, productId: string, draft?: ListingDraft) {
+  const state = hydrateResearchResults(stateInput);
+  const latestContext = latestResearchContextForDesignProduct(state, designId, productId);
+  const exactApproved = Boolean(latestContext && isListingBriefEligibleForResearchContext(state, latestContext));
+  const draftIsCurrent = Boolean(draft && deriveActiveDraftState(state.listingDrafts, designId).currentDraft?.id === draft.id);
+  const draftMatchesExactContext = Boolean(draft?.researchContext && latestContext
+    && draft.researchContext.designId === latestContext.designId
+    && draft.researchContext.productId === latestContext.productId
+    && draft.researchContext.roundId === latestContext.roundId
+    && draft.researchContext.seedVersion === latestContext.seedVersion);
+  const canRevealDraft = Boolean(draft && exactApproved && draftIsCurrent && draftMatchesExactContext);
+  return {
+    latestContext,
+    exactApproved,
+    draftIsCurrent,
+    draftMatchesExactContext,
+    canRevealDraft,
+    metadataOnly: Boolean(draft) && !canRevealDraft,
+  };
+}
+
+export function approveResearchRound(stateInput: EtsyOperationsState, context: ResearchContext, gateId = createId("research-gate"), approvedAt = new Date().toISOString()): EtsyOperationsState {
+  const state = hydrateResearchResults(stateInput);
+  if (!isLatestResearchContext(state, context)) throw new Error("Only the latest working research round can be owner-approved.");
+  const round = state.researchRounds.find((item) => item.id === context.roundId && item.designId === context.designId && item.productId === context.productId && item.seedVersion === context.seedVersion);
+  if (!round || round.status !== "conclusion-ready" || round.conclusion?.decision !== "retain" || round.conclusion.blockingTruth.length) throw new Error("Only an eligible retain conclusion for the exact context can be owner-approved.");
+  const adaptiveTasks = researchQueryTasksForContext(state.researchQueryTasks, context);
+  if (adaptiveTasks.length) {
+    const gapAnalysis = [...state.researchGapAnalysisAttempts].filter((attempt) => exactResearchContext(attempt, context)).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    const adaptive = deriveAdaptiveResearchAction({ round, tasks: state.researchQueryTasks, rows: state.researchResultRows, conclusion: round.conclusion, gapAnalysis });
+    if (adaptive.actionKind !== "close-research" || adaptive.persistedDecision !== "retain" || adaptive.coverage.some((item) => !item.covered)) throw new Error("Adaptive research must be retained, closed, fully covered, and task-complete before owner approval.");
+  }
+  const gate: OwnerGate = {
+    id: gateId,
+    subject: `Research approval: ${context.designId} / ${context.roundId}`,
+    status: "approved-for-draft",
+    evidenceIds: [...round.artifactIds],
+    missing: [],
+    nextStep: "Open the Listing Brief for this exact approved research context.",
+    researchContext: { gateType: "research-to-listing-brief", ...context, approvedAt },
+  };
+  return {
+    ...state,
+    gates: [gate, ...state.gates.filter((item) => item.id !== gateId)],
+    researchRounds: state.researchRounds.map((item) => item.id === round.id ? { ...item, status: "owner-approved" as const, ownerGateId: gateId, updatedAt: approvedAt } : item),
+  };
 }
 
 export function keywordResearchGaps(state: EtsyOperationsState, designId: string) {

@@ -20,6 +20,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { fetchJson } from "../lib/fetchJson";
+import { buildEtsyWorkflowPackage, type EtsyStageRequest } from "../lib/etsyPromptPackage";
 import type { Agent, EtsyDecision, OwnerGateChoice } from "../lib/types";
 import type { OperationsTab } from "../lib/etsyOperations";
 import EtsyOperationsHub from "../components/EtsyOperationsHub";
@@ -131,6 +132,8 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
   const [agents, setAgents] = useState<Agent[]>([]);
   const [choice, setChoice] = useState<OwnerGateChoice>("pending");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [systemPromptCopyState, setSystemPromptCopyState] = useState<"idle" | "loading" | "copied" | "failed">("idle");
+  const [workspaceStageRequest, setWorkspaceStageRequest] = useState<EtsyStageRequest | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -176,6 +179,16 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
     ].join("\n");
   }, [decision]);
 
+  const runBriefStageRequest = useMemo<EtsyStageRequest | null>(() => decision ? ({
+    stage: "growth-launch",
+    exactContext: { focus: decision.focus.title, evidenceAsOf: decision.evidenceAsOf, dashboardSurface },
+    allowedInputs: [runBrief],
+    evidenceRefs: [],
+    nextActionBoundary: "Return one proposed Growth/Launch checkpoint for owner review; do not perform account actions.",
+  }) : null, [dashboardSurface, decision, runBrief]);
+  const activeStageRequest = dashboardSurface === "workspace" ? workspaceStageRequest : runBriefStageRequest;
+  const activeStageLabel = activeStageRequest?.stage ?? "unavailable for this locked route";
+
   const pipeline = useMemo(() => {
     const gateState: PipelineState = choice === "pending" ? "waiting" : "complete";
     const listingRows = decision?.source.listingRows ?? 0;
@@ -216,11 +229,24 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
 
   async function copyRunBrief() {
     try {
-      await navigator.clipboard.writeText(runBrief);
+      if (!runBriefStageRequest) throw new Error("No active Etsy stage context.");
+      await navigator.clipboard.writeText(await buildEtsyWorkflowPackage(runBriefStageRequest));
       setCopyState("copied");
       window.setTimeout(() => setCopyState("idle"), 2200);
     } catch {
       setCopyState("failed");
+    }
+  }
+
+  async function copySystemPromptPackage() {
+    setSystemPromptCopyState("loading");
+    try {
+      if (!activeStageRequest) throw new Error("No visible typed Etsy stage context.");
+      await navigator.clipboard.writeText(await buildEtsyWorkflowPackage(activeStageRequest));
+      setSystemPromptCopyState("copied");
+      window.setTimeout(() => setSystemPromptCopyState("idle"), 2600);
+    } catch {
+      setSystemPromptCopyState("failed");
     }
   }
 
@@ -252,10 +278,21 @@ export default function EtsyDecisionView({ onOpenOffice, presentationOnly = fals
             {presentationOnly ? "明日簡報版 · 五幕故事" : "實際工作區 · 可以繼續開發"}
           </span>
         </div>
+        {!presentationOnly && <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-sage/25 bg-[#F3F8F4] p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.12em] text-sage">Stage-specific Etsy workflow · active on Codex handoffs</p>
+            <p className="mt-1 text-sm font-semibold text-ink">Current visible typed stage: {activeStageLabel}</p>
+            <p className="mt-1 text-xs leading-5 text-muted">The Dashboard shortcut follows the visible workspace stage, including the exact Bulk, Individual task, Analysis, audit or Listing Brief context. No AI request is sent automatically.</p>
+          </div>
+          <button type="button" disabled={systemPromptCopyState === "loading" || !activeStageRequest} onClick={() => void copySystemPromptPackage()} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-brand disabled:cursor-wait disabled:opacity-60">
+            {systemPromptCopyState === "copied" ? <ClipboardCheck size={15} /> : <Clipboard size={15} />}
+            {systemPromptCopyState === "loading" ? `Preparing ${activeStageLabel} packet…` : systemPromptCopyState === "copied" ? `${activeStageLabel} packet copied` : systemPromptCopyState === "failed" ? "Copy failed — try again" : activeStageRequest ? `Copy ${activeStageLabel} packet` : "Stage packet unavailable"}
+          </button>
+        </div>}
       </section>
 
       {dashboardSurface === "workspace" ? (
-        <EtsyOperationsHub initialTab={workspaceStartTab} presentationOnly={presentationOnly} />
+        <EtsyOperationsHub initialTab={workspaceStartTab} presentationOnly={presentationOnly} onStageRequestChange={setWorkspaceStageRequest} />
       ) : (
         <>
       <section className="relative overflow-hidden rounded-[30px] border border-copper/30 bg-gradient-to-br from-[#2A1711] via-[#4B2A20] to-[#713B26] p-6 text-cream shadow-brand sm:p-8 lg:p-10">

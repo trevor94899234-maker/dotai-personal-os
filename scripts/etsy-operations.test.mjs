@@ -19,6 +19,14 @@ async function core() {
   return corePromise;
 }
 
+test("Research focus follows frozen Round inputs instead of the saved design label", async () => {
+  const { researchFocusLabelForRound } = await core();
+  assert.equal(researchFocusLabelForRound({ seedSnapshot: ["Christian pastor journal", "faith leader journal", "scripture pastor journal", "worship leader journal", "pastor sermon journal"] }), "Pastor + worship leader");
+  assert.equal(researchFocusLabelForRound({ seedSnapshot: ["pastor appreciation", "pastor gift journal", "pastor prayer journal", "Christian pastor gift", "pastor thank you"], intentAnchors: [{ query: "pastor appreciation" }, { query: "faith leader journal" }, { query: "scripture pastor journal" }, { query: "worship leader journal" }, { query: "pastor sermon journal" }] }), "Pastor + worship leader");
+  assert.equal(researchFocusLabelForRound({ seedSnapshot: ["worship leader journal", "church worship notes", "ministry journal", "faith journal", "devotional journal"] }), "Worship leader");
+  assert.equal(researchFocusLabelForRound(undefined), "No active research focus");
+});
+
 function addReadyDraftEvidence(state, designId, productId, includeKeyword = true) {
   const common = {
     source: "owner",
@@ -376,7 +384,12 @@ test("Implementation workspace exposes an implementation map without promoting P
   assert.match(source, /Presentation → product/);
   assert.match(source, /status: "phase-2"/);
   assert.match(source, /attribution 未確認/);
-  assert.match(source, /onClick=\{\(\) => setOperationsTab\(lane\.tab\)\}/);
+  assert.match(source, /onClick=\{\(\) => focusWorkflowTab\(lane\.tab\)\}/);
+  assert.match(source, /id="etsy-workflow-sections" className="sticky/);
+  assert.match(source, /const routeOffset = Math\.max\(96, \(stickyNav\?\.getBoundingClientRect\(\)\.height \?\? 0\) \+ 12\)/);
+  assert.match(source, /const analysisNextAction = researchBriefEligible/);
+  assert.match(source, /firstBrokenLink: "Owner-approved Listing Brief"/);
+  assert.match(source, /label: hasApprovedDraft \? "Review approved Listing Brief"/);
 });
 
 test("Actual workspace is the canonical Etsy entry point and legacy actions route back to it", async () => {
@@ -384,7 +397,7 @@ test("Actual workspace is the canonical Etsy entry point and legacy actions rout
   assert.match(source, /useState<"workspace" \| "history">\("workspace"\)/);
   assert.match(source, /presentationOnly = false/);
   assert.match(source, /實際工作區 · 可以繼續開發/);
-  assert.match(source, /<EtsyOperationsHub initialTab=\{workspaceStartTab\} presentationOnly=\{presentationOnly\} \/>/);
+  assert.match(source, /<EtsyOperationsHub initialTab=\{workspaceStartTab\} presentationOnly=\{presentationOnly\} onStageRequestChange=\{setWorkspaceStageRequest\} \/>/);
   assert.doesNotMatch(source, /歷史報告/);
   assert.match(source, /Open current evidence workflow/);
   assert.match(source, /Open current Owner Gate/);
@@ -415,6 +428,36 @@ test("Design intake supplies safe defaults when local OCR cannot read the artwor
   });
 });
 
+test("Design intake recognises a pastor appreciation message from real local OCR text", async () => {
+  const { inferDesignSuggestion } = await core();
+  const suggestion = inferDesignSuggestion("MD-1435.psd 的複本.png", "RICHARD BAUCUM PASTOR LIBERTY BAPTIST CHURCH His PRAYERS. His WISDOM. His LEGACY. 1 THESSALONIANS 5:12-13");
+  assert.equal(suggestion.name, "MD-1435");
+  assert.equal(suggestion.recipient, "Pastor");
+  assert.equal(suggestion.occasion, "Pastor appreciation");
+  assert.equal(suggestion.basis, "local-ocr");
+});
+
+test("Design product recommendation follows the owner visual rules and keeps the dropdown overridable", async () => {
+  const { recommendDesignProduct } = await core();
+  const products = [
+    { id: "journal", name: "Sample Printed Journal", type: "Journal" },
+    { id: "acrylic", name: "Sample Acrylic Display", type: "Acrylic plaque" },
+  ];
+  assert.deepEqual(recommendDesignProduct(products, { tone: "dark", shape: "rectangular", aspectRatio: 0.67 }), {
+    productId: "journal",
+    productKind: "journal",
+    confidence: "high",
+    reason: "Dark artwork and a rectangular layout usually fit a printed journal.",
+  });
+  assert.deepEqual(recommendDesignProduct(products, { tone: "light", shape: "square", aspectRatio: 1 }), {
+    productId: "acrylic",
+    productKind: "acrylic",
+    confidence: "high",
+    reason: "Light artwork and a square layout usually fit an LED acrylic display.",
+  });
+  assert.equal(recommendDesignProduct([{ id: "other", name: "Unknown product", type: "Gift" }], { tone: "dark", shape: "rectangular", aspectRatio: 0.67 }), null);
+});
+
 test("Dashboard starts from two explicit routes and persists one shared working context", async () => {
   const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
   const research = await readFile(join(PROJECT_ROOT, "src", "components", "KeywordResearchWorkspace.tsx"), "utf8");
@@ -427,20 +470,43 @@ test("Dashboard starts from two explicit routes and persists one shared working 
   assert.doesNotMatch(research, /const \[selectedDesignId, setSelectedDesignId\]/);
 });
 
+test("Research and Analysis render only the workspace for the selected work route", async () => {
+  const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
+  assert.match(hub, /operationsTab === "research" && workMode === "listing-audit" && <div[^>]+aria-label="Existing Listing research evidence">/);
+  assert.match(hub, /operationsTab === "research" && workMode === "product-development" && <div[^>]+aria-label="Product Development keyword research">/);
+  assert.match(hub, /operationsTab === "analysis" && workMode === "product-development" && \(/);
+  assert.match(hub, /operationsTab === "analysis" && workMode === "listing-audit" && <section[^>]+aria-label="Listing analysis evidence gate">/);
+});
+
 test("Design intake makes product the only required owner choice after local analysis", async () => {
   const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
   for (const contract of [
     "Automatic design intake",
     "prepareDesignImage",
     "createWorker(\"eng\")",
-    "2. Product — the only choice required",
+    "2. Product — suggested automatically; confirm or change",
     "Save design and continue to Research",
     "Adjust the suggestion only if needed",
   ]) assert.ok(hub.includes(contract), `missing automatic design intake contract: ${contract}`);
   assert.match(hub, /type="file" accept="image\/png,image\/jpeg,image\/webp"/);
   assert.match(hub, /context\.fillStyle = "#FFFFFF"/);
+  assert.match(hub, /recommendDesignProduct\(state\.products, prepared\.visualProfile\)/);
+  assert.match(hub, /productId: productRecommendation\?\.productId \?\? current\.productId/);
   assert.match(hub, /setOperationsTab\("research"\)/);
   assert.match(hub, /previewDataUrl: prepared\.originalDataUrl/);
+});
+
+test("Saved design library keeps image replacement reversible and preserves linked history", async () => {
+  const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
+  const research = await readFile(join(PROJECT_ROOT, "src", "components", "KeywordResearchWorkspace.tsx"), "utf8");
+  for (const contract of ["Saved design library", "Use in workflow", "Replace image", "Reanalyse", "Archive", "Restore", "history were preserved"]) {
+    assert.ok(hub.includes(contract), `missing saved-design management contract: ${contract}`);
+  }
+  assert.match(hub, /designs: state\.designs\.map\(\(item\) => item\.id === designItem\.id \? updatedDesign : item\)/);
+  assert.match(hub, /productId: designItem\.productId/);
+  assert.match(hub, /archivedAt: undefined/);
+  assert.match(hub, /activeDesigns = state\.designs\.filter\(\(item\) => !item\.archivedAt\)/);
+  assert.match(research, /state\.designs\.filter\(\(item\) => !item\.archivedAt\)/);
 });
 
 test("Demo hydration seeds only empty collections and preserves existing owner records", async () => {
@@ -792,4 +858,42 @@ test("Derived grouping never bleeds across source, kind, target, or period; age 
   assert.equal(old.metrics.length, 0, "unreadable OCR metrics stay excluded from conclusions");
   const explicitlyConfigured = deriveEvidenceGroups(artifacts, { asOf: "2026-08-23", staleAfterDays: 30 }).find((group) => group.artifactIds.includes("old-ocr"));
   assert.equal(explicitlyConfigured.stale, true, "only explicit owner-configured input may assert stale");
+});
+
+test("Product Development research results hydrate additively without changing the V1 store contract", async () => {
+  const { DEFAULT_STATE, hydrateResearchResults } = await core();
+  const legacy = structuredClone(DEFAULT_STATE);
+  delete legacy.researchRounds;
+  delete legacy.researchResultRows;
+  delete legacy.researchDuplicateAuditEvents;
+  delete legacy.researchFreshnessPolicies;
+  const hydrated = hydrateResearchResults(legacy);
+  assert.equal(hydrated.version, 1);
+  assert.deepEqual(hydrated.researchRounds, []);
+  assert.deepEqual(hydrated.researchResultRows, []);
+  assert.deepEqual(hydrated.researchDuplicateAuditEvents, []);
+  assert.strictEqual(hydrated.artifacts, legacy.artifacts);
+  assert.strictEqual(hydrated.keywordResearchLoops, legacy.keywordResearchLoops);
+  assert.strictEqual(hydrated.listingDrafts, legacy.listingDrafts);
+});
+
+test("Product Development Research Results Inbox owns the exact Listing Brief gate without changing four-route anchors", async () => {
+  const hub = await readFile(join(PROJECT_ROOT, "src", "components", "EtsyOperationsHub.tsx"), "utf8");
+  const research = await readFile(join(PROJECT_ROOT, "src", "components", "KeywordResearchWorkspace.tsx"), "utf8");
+  assert.match(research, /Product Development Research Results Inbox/);
+  assert.match(research, /Preview before save/);
+  assert.match(research, /sessionStorage\.setItem\(activePreviewKey/);
+  assert.match(research, /Approve exact round for Listing Brief/);
+  assert.match(research, /await commit\(\{ \.\.\.state, researchRounds: \[round, \.\.\.state\.researchRounds\] \}/);
+  assert.match(research, /OCR field-level owner confirmation/);
+  assert.match(research, /Editable raw structured text/);
+  assert.match(research, /Buyer \/ occasion fit — owner review/);
+  assert.match(research, /item\.freshnessPolicy/);
+  assert.match(hub, /isListingBriefEligibleForResearchContext\(state, researchContext\)/);
+  assert.match(hub, /latestResearchRoundForDesignProduct\(state, draft\.designId, draft\.productId\)/);
+  assert.match(hub, /researchContext: listingStudioResearchContext/);
+  assert.match(hub, /researchMalformedOptionalCollections\(imported\)/);
+  assert.match(hub, /Listing Brief is locked until you approve this exact design, product, research round and seed version/);
+  assert.match(hub, /operationsTab === "research" && workMode === "listing-audit"/);
+  assert.match(hub, /operationsTab === "research" && workMode === "product-development"/);
 });

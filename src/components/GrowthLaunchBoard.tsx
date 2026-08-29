@@ -1,5 +1,6 @@
 import { useMemo, useState, type ChangeEvent } from "react";
 import { CheckCircle2, Clipboard, FileUp, FlaskConical, Rocket, Search, ShieldCheck } from "lucide-react";
+import { buildEtsyWorkflowPackage } from "../lib/etsyPromptPackage";
 
 type EvidenceId = "product-facts" | "cost-sheet" | "erank-keywords" | "everbee-market" | "social-log";
 type EvidenceRecord = { note: string; fileName?: string; preview?: string; updatedAt?: string };
@@ -43,7 +44,7 @@ export default function GrowthLaunchBoard() {
     ...ITEMS.flatMap((item) => { const record = evidence[item.id]; return [`[${item.label}]`, `Source: ${item.source}`, `File: ${record?.fileName ?? "none"}`, `Note: ${record?.note.trim() || "none"}`, ""]; }),
     "Decision boundary: research and drafting only; owner approves Etsy publishing, pricing and ads.",
   ].join("\n"), [evidence, launchReady, nextMissing?.label, progress]);
-  async function copyBrief() { try { await navigator.clipboard.writeText(brief); setNotice("Growth brief copied. Paste it into Codex to start the decision review."); } catch { setNotice("Copy failed. Browser clipboard permission may be blocked."); } }
+  async function copyBrief() { try { await navigator.clipboard.writeText(await buildEtsyWorkflowPackage({ stage: "growth-launch", exactContext: { board: "etsy-growth-launch", readinessPct: progress }, allowedInputs: [brief], evidenceRefs: ITEMS.flatMap((item) => evidence[item.id]?.fileName ? [evidence[item.id]!.fileName!] : []), nextActionBoundary: launchReady ? "Owner reviews the proposed decision; no live action occurs." : `Collect ${nextMissing?.label ?? "the first missing evidence item"}.` })); setNotice("Growth-launch stage packet copied. Paste it into Codex to start the decision review."); } catch { setNotice("Copy failed. The growth-launch packet or browser clipboard is unavailable."); } }
 
   return (
     <section className="rounded-[26px] border border-copper/25 bg-panel p-5 shadow-card sm:p-6">
